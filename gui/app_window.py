@@ -39,6 +39,7 @@ from core.nano_probe_manager import NanoProbeManager
 from core.gamepad_manager import GamepadManager
 from core.param_manager import ParameterManager
 from core.auto_detector import AutoDetector
+from core.motor_matrix_manager import MotorMatrixManager
 
 
 class PixDoctorApp(tk.Tk):
@@ -181,7 +182,13 @@ class PixDoctorApp(tk.Tk):
 
         # Initialize Views
         self.views = {
-            "summary": SummaryView(self.workspace, mav_mgr=self.mav_mgr),
+            "summary": SummaryView(
+                self.workspace,
+                mav_mgr=self.mav_mgr,
+                gamepad_mgr=self.gamepad_mgr,
+                param_mgr=self.param_mgr,
+                nano_mgr=self.nano_mgr
+            ),
             "thrusters": ThrusterView(
                 self.workspace,
                 mav_mgr=self.mav_mgr,
@@ -322,7 +329,7 @@ class PixDoctorApp(tk.Tk):
 
             # 2. Dispatch to Active Views
             if self.active_view_key == "summary":
-                self.views["summary"].update_telemetry(mav_snap)
+                self.views["summary"].update_telemetry(mav_snap, pad_snap, nano_snap)
             elif self.active_view_key == "thrusters":
                 self.views["thrusters"].update_telemetry(mav_snap, nano_snap)
             elif self.active_view_key == "controller":
@@ -503,7 +510,13 @@ class PixDoctorApp(tk.Tk):
             self.views["terminal"].append_log(text, level)
 
     def _on_closing(self):
-        """Clean shutdown of all threads."""
+        """Clean shutdown of all threads, ensuring configurations are persisted."""
+        try:
+            self.gamepad_mgr.save_config()
+            MotorMatrixManager.get_instance().save_to_file()
+        except Exception:
+            pass
+
         self.auto_detector.stop()
         self.gamepad_mgr.stop()
         self.mav_mgr.disconnect()

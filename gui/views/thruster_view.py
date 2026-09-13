@@ -35,6 +35,8 @@ from core.mavlink_manager import MavlinkManager
 from core.nano_probe_manager import NanoProbeManager
 from core.param_manager import ParameterManager
 from core.gamepad_manager import GamepadManager
+from core.motor_matrix_manager import MotorMatrixManager
+from gui.widgets.motor_matrix_dialog import MotorMatrixDialog
 
 
 class ThrusterView(tk.Frame):
@@ -68,6 +70,9 @@ class ThrusterView(tk.Frame):
         self.gamepad_thruster_active = tk.BooleanVar(value=False)
         self.gamepad_target_motor = tk.IntVar(value=1)
         self._updating_sliders = False
+
+        self.matrix_mgr = MotorMatrixManager.get_instance()
+        self.matrix_mgr.register_callback(self._on_matrix_updated)
 
         self._build_ui()
 
@@ -211,6 +216,13 @@ class ThrusterView(tk.Frame):
         self.dir_frame.pack(fill=tk.X)
         self._rebuild_direction_toggles()
 
+        ttk.Button(
+            dir_card.body,
+            text="[ CONFIGURE MOTOR MATRIX & STICKS ]",
+            style="Invert.TButton",
+            command=self._open_motor_matrix_dialog
+        ).pack(fill=tk.X, pady=(6, 2))
+
         # ================= RIGHT COLUMN: SEQUENCE TEST + INDIVIDUAL SLIDERS + CLOSED LOOP =================
         right_col = tk.Frame(grid_frame, bg=COLOR_BG)
         right_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -329,12 +341,27 @@ class ThrusterView(tk.Frame):
             )
             btn.pack(side=tk.RIGHT)
 
+    def _open_motor_matrix_dialog(self):
+        """Open graphical motor allocation matrix and stick configuration dialog."""
+        MotorMatrixDialog(
+            self,
+            mav_mgr=self.mav_mgr,
+            nano_mgr=self.nano_mgr,
+            param_mgr=self.param_mgr,
+            gamepad_mgr=self.gamepad_mgr
+        )
+
+    def _on_matrix_updated(self):
+        """Callback when motor matrix or directions change in dialog."""
+        self._rebuild_direction_toggles()
+
     def _toggle_motor_direction(self, motor_idx: int):
         param_name = f"MOT_{motor_idx}_DIRECTION"
         cur_val = self.param_mgr.get_value(param_name, 1.0)
         new_val = -1.0 if cur_val == 1.0 else 1.0
         self.param_mgr.set_value(param_name, new_val)
         self.mav_mgr.set_param(param_name, new_val)
+        self.matrix_mgr.set_motor_direction(motor_idx, int(new_val), notify=False)
         self._rebuild_direction_toggles()
 
     def _rebuild_motor_test_buttons(self):
@@ -607,16 +634,11 @@ class ThrusterView(tk.Frame):
         if self.gamepad_thruster_active.get() and self.gamepad_mgr and self.mav_mgr.is_connected():
             g_snap = self.gamepad_mgr.state.get_snapshot()
             if g_snap.get("connected", False):
-                gain = g_snap.get("gain", 0.5)
-                # In ArduSub ROV:
-                # Right Stick Y = Forward / Reverse (x)
-                # Right Stick X = Lateral Strafe (y)
-                # Left Stick Y = Throttle / Depth (z)
-                # Left Stick X = Yaw Turn (r)
-                fwd = int(g_snap.get("axis_ry", 0) * gain)
-                lat = int(g_snap.get("axis_rx", 0) * gain)
-                throttle = int(g_snap.get("axis_ly", 0) * gain)
-                yaw = int(g_snap.get("axis_lx", 0) * gain)
+                cmds = self.matrix_mgr.extract_gamepad_commands(g_snap)
+                fwd = cmds["fwd"]
+                lat = cmds["lat"]
+                throttle = cmds["depth"]
+                yaw = cmds["yaw"]
                 buttons = g_snap.get("buttons_bitmask", 0)
 
                 # Send live flight input to Pixhawk!

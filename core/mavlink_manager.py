@@ -514,6 +514,12 @@ class MavlinkManager:
         r: Yaw Heading (-1000..1000)
         buttons: uint16 bitmask
         """
+        if self.state.is_sim:
+            self.mock_sim.set_manual_control(x, y, z, r)
+            with self.state.lock:
+                self.state.servo_raw = list(self.mock_sim.motor_pwms)
+            return
+
         if not self.mav_conn:
             return
 

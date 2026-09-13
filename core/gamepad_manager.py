@@ -102,6 +102,14 @@ DEFAULT_BUTTON_MAPPINGS: Dict[str, str] = {
     "dpad_right": "MODE_ALT_HOLD",
 }
 
+# Wireless / Bluetooth Gamepad Mapping Profiles for WinMM / DirectInput
+WIRELESS_PROFILES: Dict[str, str] = {
+    "XBOX_BT": "Xbox Wireless / Bluetooth (Default)",
+    "GENERIC_DINPUT": "Generic DirectInput (Logitech/8BitDo/2.4G)",
+    "PLAYSTATION": "PlayStation (DualShock / DualSense)",
+    "LEGACY_1TO1": "Direct 1:1 Bit Mapping",
+}
+
 
 class GamepadState:
     """Thread-safe snapshot of gamepad axes, triggers, calibration, and button mappings."""
@@ -111,6 +119,8 @@ class GamepadState:
         self.connected: bool = False
         self.controller_name: str = "Disconnected"
         self.backend: str = "None"
+        self.wireless_profile: str = "XBOX_BT"
+        self.last_pressed_raw_btn: int = 0
         self.last_update_time: float = 0.0
 
         # Raw Axes before calibration (-32768..32767)
@@ -201,6 +211,8 @@ class GamepadState:
                 "dpad_left": self.dpad_left,
                 "dpad_right": self.dpad_right,
                 "buttons_bitmask": self.buttons_bitmask,
+                "wireless_profile": self.wireless_profile,
+                "last_pressed_raw_btn": self.last_pressed_raw_btn,
                 "gain": self.gain,
                 "deadzone_pct": self.deadzone_pct,
                 "expo": self.expo,
@@ -272,6 +284,7 @@ class GamepadManager:
         """Set pilot thrust gain multiplier (0.1 to 1.0)."""
         with self.state.lock:
             self.state.gain = max(0.1, min(1.0, gain))
+        self.save_config()
 
     def set_deadzone(self, pct: float):
         """Set joystick deadzone fraction (0.00 to 0.40)."""
@@ -318,6 +331,13 @@ class GamepadManager:
             self.state.invert_ry = False
         self.save_config()
 
+    def set_wireless_profile(self, profile_key: str):
+        """Set the active wireless/DirectInput button profile (e.g. XBOX_BT, GENERIC_DINPUT, PLAYSTATION)."""
+        if profile_key in WIRELESS_PROFILES:
+            with self.state.lock:
+                self.state.wireless_profile = profile_key
+            self.save_config()
+
     def set_button_mapping(self, btn_name: str, action_id: str):
         """Assign an action to a button."""
         with self.state.lock:
@@ -335,6 +355,8 @@ class GamepadManager:
         try:
             with self.state.lock:
                 data = {
+                    "wireless_profile": self.state.wireless_profile,
+                    "gain": self.state.gain,
                     "deadzone_pct": self.state.deadzone_pct,
                     "expo": self.state.expo,
                     "invert_lx": self.state.invert_lx,
@@ -360,6 +382,8 @@ class GamepadManager:
             with open(self._config_file, "r") as f:
                 data = json.load(f)
             with self.state.lock:
+                self.state.wireless_profile = data.get("wireless_profile", "XBOX_BT")
+                self.state.gain = float(data.get("gain", 0.50))
                 self.state.deadzone_pct = float(data.get("deadzone_pct", 0.10))
                 self.state.expo = float(data.get("expo", 0.0))
                 self.state.invert_lx = bool(data.get("invert_lx", False))
@@ -507,6 +531,25 @@ class GamepadManager:
             "dpad_right": bool(b & XINPUT_GAMEPAD_DPAD_RIGHT),
         }
 
+        # Construct normalized ArduSub MANUAL_CONTROL buttons bitmask:
+        # bit 0: A, bit 1: B, bit 2: X, bit 3: Y, bit 4: LB, bit 5: RB, bit 6: Back, bit 7: Start,
+        # bit 8: L3, bit 9: R3, bit 10: D-Up, bit 11: D-Down, bit 12: D-Left, bit 13: D-Right
+        ardusub_mask = 0
+        if btn_states["btn_a"]: ardusub_mask |= (1 << 0)
+        if btn_states["btn_b"]: ardusub_mask |= (1 << 1)
+        if btn_states["btn_x"]: ardusub_mask |= (1 << 2)
+        if btn_states["btn_y"]: ardusub_mask |= (1 << 3)
+        if btn_states["btn_lb"]: ardusub_mask |= (1 << 4)
+        if btn_states["btn_rb"]: ardusub_mask |= (1 << 5)
+        if btn_states["btn_back"]: ardusub_mask |= (1 << 6)
+        if btn_states["btn_start"]: ardusub_mask |= (1 << 7)
+        if btn_states["btn_l3"]: ardusub_mask |= (1 << 8)
+        if btn_states["btn_r3"]: ardusub_mask |= (1 << 9)
+        if btn_states["dpad_up"]: ardusub_mask |= (1 << 10)
+        if btn_states["dpad_down"]: ardusub_mask |= (1 << 11)
+        if btn_states["dpad_left"]: ardusub_mask |= (1 << 12)
+        if btn_states["dpad_right"]: ardusub_mask |= (1 << 13)
+
         self._check_button_edges(btn_states)
 
         with self.state.lock:
@@ -526,7 +569,7 @@ class GamepadManager:
             self.state.trigger_rt = rt
             for k, v in btn_states.items():
                 setattr(self.state, k, v)
-            self.state.buttons_bitmask = b
+            self.state.buttons_bitmask = ardusub_mask
 
     def _parse_winmm(self, info: JOYINFOEX, jid: int):
         """Process WinMM wireless / Bluetooth / DirectInput joystick data with calibration."""
@@ -546,6 +589,7 @@ class GamepadManager:
             off_ly = self.state.center_offset_ly
             off_rx = self.state.center_offset_rx
             off_ry = self.state.center_offset_ry
+            profile = self.state.wireless_profile
 
         lx = self._normalize_stick_calibrated(raw_lx, off_lx, inv_lx, dz, expo)
         ly = self._normalize_stick_calibrated(raw_ly, off_ly, inv_ly, dz, expo)
@@ -560,39 +604,159 @@ class GamepadManager:
         if info.dwVpos > 0:
             rt = int((info.dwVpos / 65535.0) * 1000)
 
-        # POV Hat / D-Pad
+        # POV Hat / D-Pad (dwPOV in 1/100 of degree; 65535 = centered)
         pov = info.dwPOV
-        dp_up = (pov == 0 or pov == 31500 or pov == 4500)
-        dp_right = (pov == 9000 or pov == 4500 or pov == 13500)
-        dp_down = (pov == 18000 or pov == 13500 or pov == 22500)
-        dp_left = (pov == 27000 or pov == 22500 or pov == 31500)
+        dp_up = False
+        dp_right = False
+        dp_down = False
+        dp_left = False
+        if pov != 65535 and pov <= 36000:
+            dp_up = (pov >= 31500 or pov <= 4500)
+            dp_right = (pov >= 4500 and pov <= 13500)
+            dp_down = (pov >= 13500 and pov <= 22500)
+            dp_left = (pov >= 22500 and pov <= 31500)
 
         # Buttons (bits 0..31)
         b = info.dwButtons
-        btn_states = {
-            "btn_a": bool(b & (1 << 0)),
-            "btn_b": bool(b & (1 << 1)),
-            "btn_x": bool(b & (1 << 2)),
-            "btn_y": bool(b & (1 << 3)),
-            "btn_lb": bool(b & (1 << 4)),
-            "btn_rb": bool(b & (1 << 5)),
-            "btn_back": bool(b & (1 << 6)),
-            "btn_start": bool(b & (1 << 7)),
-            "btn_l3": bool(b & (1 << 8)),
-            "btn_r3": bool(b & (1 << 9)),
-            "dpad_up": dp_up,
-            "dpad_down": dp_down,
-            "dpad_left": dp_left,
-            "dpad_right": dp_right,
-        }
+
+        # Track the lowest raw button index pressed (1-indexed for pilot display)
+        raw_btn_num = 0
+        if b > 0:
+            for i in range(32):
+                if b & (1 << i):
+                    raw_btn_num = i + 1
+                    break
+
+        # Decode buttons according to active wireless gamepad profile
+        if profile == "XBOX_BT":
+            # Windows Bluetooth HID Driver mapping for Xbox Series / One controllers:
+            # Btn 1 (bit 0): A
+            # Btn 2 (bit 1): B
+            # Btn 3 or 4 (bit 2 or 3): X (varies between firmware builds)
+            # Btn 5 (bit 4): Y
+            # Btn 7 (bit 6): LB
+            # Btn 8 (bit 7): RB
+            # Btn 11 (bit 10): Back / View
+            # Btn 12 (bit 11): Start / Menu
+            # Btn 14 (bit 13): Left Thumb Click (L3)
+            # Btn 15 (bit 14): Right Thumb Click (R3)
+            btn_states = {
+                "btn_a": bool(b & (1 << 0)),
+                "btn_b": bool(b & (1 << 1)),
+                "btn_x": bool(b & ((1 << 2) | (1 << 3))),
+                "btn_y": bool(b & (1 << 4)),
+                "btn_lb": bool(b & (1 << 6)),
+                "btn_rb": bool(b & (1 << 7)),
+                "btn_back": bool(b & (1 << 10)),
+                "btn_start": bool(b & (1 << 11)),
+                "btn_l3": bool(b & (1 << 13)),
+                "btn_r3": bool(b & (1 << 14)),
+                "dpad_up": dp_up,
+                "dpad_down": dp_down,
+                "dpad_left": dp_left,
+                "dpad_right": dp_right,
+            }
+        elif profile == "GENERIC_DINPUT":
+            # Generic DirectInput / Logitech / 8BitDo D-Input mode:
+            # Btn 1 (bit 0): X
+            # Btn 2 (bit 1): A
+            # Btn 3 (bit 2): B
+            # Btn 4 (bit 3): Y
+            # Btn 5 (bit 4): LB
+            # Btn 6 (bit 5): RB
+            # Btn 9 (bit 8): Back / Select
+            # Btn 10 (bit 9): Start
+            # Btn 11 (bit 10): L3
+            # Btn 12 (bit 11): R3
+            btn_states = {
+                "btn_a": bool(b & (1 << 1)),
+                "btn_b": bool(b & (1 << 2)),
+                "btn_x": bool(b & (1 << 0)),
+                "btn_y": bool(b & (1 << 3)),
+                "btn_lb": bool(b & (1 << 4)),
+                "btn_rb": bool(b & (1 << 5)),
+                "btn_back": bool(b & (1 << 8)),
+                "btn_start": bool(b & (1 << 9)),
+                "btn_l3": bool(b & (1 << 10)),
+                "btn_r3": bool(b & (1 << 11)),
+                "dpad_up": dp_up,
+                "dpad_down": dp_down,
+                "dpad_left": dp_left,
+                "dpad_right": dp_right,
+            }
+        elif profile == "PLAYSTATION":
+            # PlayStation DualShock 4 / DualSense DirectInput:
+            # Btn 1 (bit 0): Square (X)
+            # Btn 2 (bit 1): Cross (A)
+            # Btn 3 (bit 2): Circle (B)
+            # Btn 4 (bit 3): Triangle (Y)
+            # Btn 5 (bit 4): L1 (LB)
+            # Btn 6 (bit 5): R1 (RB)
+            # Btn 9 (bit 8): Share / Create (Back)
+            # Btn 10 (bit 9): Options (Start)
+            # Btn 11 (bit 10): L3
+            # Btn 12 (bit 11): R3
+            btn_states = {
+                "btn_a": bool(b & (1 << 1)),
+                "btn_b": bool(b & (1 << 2)),
+                "btn_x": bool(b & (1 << 0)),
+                "btn_y": bool(b & (1 << 3)),
+                "btn_lb": bool(b & (1 << 4)),
+                "btn_rb": bool(b & (1 << 5)),
+                "btn_back": bool(b & (1 << 8)),
+                "btn_start": bool(b & (1 << 9)),
+                "btn_l3": bool(b & (1 << 10)),
+                "btn_r3": bool(b & (1 << 11)),
+                "dpad_up": dp_up,
+                "dpad_down": dp_down,
+                "dpad_left": dp_left,
+                "dpad_right": dp_right,
+            }
+        else:
+            # LEGACY_1TO1: Direct bit-to-button order (bits 0..9)
+            btn_states = {
+                "btn_a": bool(b & (1 << 0)),
+                "btn_b": bool(b & (1 << 1)),
+                "btn_x": bool(b & (1 << 2)),
+                "btn_y": bool(b & (1 << 3)),
+                "btn_lb": bool(b & (1 << 4)),
+                "btn_rb": bool(b & (1 << 5)),
+                "btn_back": bool(b & (1 << 6)),
+                "btn_start": bool(b & (1 << 7)),
+                "btn_l3": bool(b & (1 << 8)),
+                "btn_r3": bool(b & (1 << 9)),
+                "dpad_up": dp_up,
+                "dpad_down": dp_down,
+                "dpad_left": dp_left,
+                "dpad_right": dp_right,
+            }
+
+        # Normalized ArduSub MANUAL_CONTROL buttons bitmask
+        ardusub_mask = 0
+        if btn_states["btn_a"]: ardusub_mask |= (1 << 0)
+        if btn_states["btn_b"]: ardusub_mask |= (1 << 1)
+        if btn_states["btn_x"]: ardusub_mask |= (1 << 2)
+        if btn_states["btn_y"]: ardusub_mask |= (1 << 3)
+        if btn_states["btn_lb"]: ardusub_mask |= (1 << 4)
+        if btn_states["btn_rb"]: ardusub_mask |= (1 << 5)
+        if btn_states["btn_back"]: ardusub_mask |= (1 << 6)
+        if btn_states["btn_start"]: ardusub_mask |= (1 << 7)
+        if btn_states["btn_l3"]: ardusub_mask |= (1 << 8)
+        if btn_states["btn_r3"]: ardusub_mask |= (1 << 9)
+        if btn_states["dpad_up"]: ardusub_mask |= (1 << 10)
+        if btn_states["dpad_down"]: ardusub_mask |= (1 << 11)
+        if btn_states["dpad_left"]: ardusub_mask |= (1 << 12)
+        if btn_states["dpad_right"]: ardusub_mask |= (1 << 13)
 
         self._check_button_edges(btn_states)
 
         with self.state.lock:
             self.state.connected = True
-            self.state.controller_name = f"Wireless Controller #{jid}"
+            profile_name = WIRELESS_PROFILES.get(profile, profile)
+            self.state.controller_name = f"Wireless Controller #{jid} [{profile}]"
             self.state.backend = "WinMM (Wireless/BT)"
             self.state.last_update_time = time.time()
+            self.state.last_pressed_raw_btn = raw_btn_num
             self.state.raw_lx = raw_lx
             self.state.raw_ly = raw_ly
             self.state.raw_rx = raw_rx
@@ -605,7 +769,7 @@ class GamepadManager:
             self.state.trigger_rt = rt
             for k, v in btn_states.items():
                 setattr(self.state, k, v)
-            self.state.buttons_bitmask = b
+            self.state.buttons_bitmask = ardusub_mask
 
     def _check_button_edges(self, btn_states: Dict[str, bool]):
         for name, current in btn_states.items():

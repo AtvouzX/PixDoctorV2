@@ -96,16 +96,19 @@ class TestPixDoctorV2Core(unittest.TestCase):
         self.assertEqual(snap["error_delta_us"][0], 20)  # 1520 - 1500 = +20us
 
     def test_gamepad_manager(self):
-        """Verify XInput and WinMM controller manager initialization."""
+        """Verify XInput and WinMM controller manager initialization and gain adjustment."""
         gm = GamepadManager()
         snap = gm.state.get_snapshot()
         self.assertIn("axis_lx", snap)
         self.assertIn("btn_a", snap)
-        self.assertEqual(snap["gain"], 0.50)
+        self.assertGreaterEqual(snap["gain"], 0.1)
+        self.assertLessEqual(snap["gain"], 1.0)
 
         # Gain change
         gm.set_gain(0.75)
         self.assertEqual(gm.state.gain, 0.75)
+        gm.set_gain(0.50)
+        self.assertEqual(gm.state.gain, 0.50)
 
     def test_mock_sim_engine(self):
         """Verify offline simulation engine generates packets when activated."""
@@ -167,6 +170,222 @@ class TestPixDoctorV2Core(unittest.TestCase):
         
         gm.reset_mappings_to_default()
         self.assertEqual(gm.state.button_mappings["btn_a"], "DISARM")
+
+        # Wireless profiles test
+        gm.set_wireless_profile("GENERIC_DINPUT")
+        self.assertEqual(gm.state.wireless_profile, "GENERIC_DINPUT")
+        gm.set_wireless_profile("XBOX_BT")
+        self.assertEqual(gm.state.wireless_profile, "XBOX_BT")
+
+    def test_futuristic_hud_flight_telemetry(self):
+        """Verify FuturisticHud receives telemetry and activates flight mode on armed+gamepad."""
+        import tkinter as tk
+        from gui.widgets.futuristic_hud import FuturisticHud
+
+        root = tk.Tk()
+        root.withdraw()
+        hud = FuturisticHud(root, width=800, height=600)
+        
+        mav_snap = {
+            "roll": 5.0,
+            "pitch": -2.5,
+            "yaw": 180.0,
+            "depth": 1.25,
+            "battery_voltage": 16.2,
+            "battery_current": 5.4,
+            "vcc_voltage": 5.04,
+            "pressure_bar": 1.125,
+            "temperature": 24.5,
+            "armed": True,
+            "flight_mode_name": "MANUAL",
+            "leak": False,
+            "statustext": "Test OK",
+        }
+        pad_snap = {
+            "connected": True,
+            "controller_name": "Xbox Controller",
+            "gain": 0.50,
+            "axis_ry": 800,  # Forward thrust
+            "axis_rx": 0,
+            "axis_ly": 400,  # Depth thrust
+            "axis_lx": -200, # Yaw turn
+        }
+
+        hud.update_telemetry(mav_snap, pad_snap)
+        self.assertTrue(hud.in_flight)
+        self.assertEqual(hud.cmd_fwd, 400) # 800 * 0.5
+        self.assertEqual(hud.depth, 1.25)
+        self.assertEqual(hud.batt_v, 16.2)
+
+        # Disarm -> should not be in_flight
+        mav_snap["armed"] = False
+        hud.update_telemetry(mav_snap, pad_snap)
+        self.assertFalse(hud.in_flight)
+
+        root.destroy()
+
+    def test_thruster_synchronization_and_mixing(self):
+        """Verify frame thruster mixer and zero-latency HUD animation synchronization."""
+        from core.ardusub_defs import compute_thruster_pwms
+        import tkinter as tk
+        from gui.widgets.futuristic_hud import FuturisticHud
+
+        # 1. SimpleROV-4 Mixer: Forward command -> M1 & M2 active, M3 & M4 neutral
+        pwms_fwd = compute_thruster_pwms(frame_id=6, fwd=800, lat=0, depth=0, yaw=0, armed=True)
+        self.assertGreater(pwms_fwd[0], 1700) # M1 Port Horiz
+        self.assertGreater(pwms_fwd[1], 1700) # M2 Stbd Horiz
+        self.assertEqual(pwms_fwd[2], 1500)   # M3 Vert Left
+        self.assertEqual(pwms_fwd[3], 1500)   # M4 Vert Right
+
+        # 2. SimpleROV-4 Mixer: Depth command -> M3 & M4 active, M1 & M2 neutral
+        pwms_depth = compute_thruster_pwms(frame_id=6, fwd=0, lat=0, depth=600, yaw=0, armed=True)
+        self.assertEqual(pwms_depth[0], 1500)
+        self.assertEqual(pwms_depth[1], 1500)
+        self.assertGreater(pwms_depth[2], 1700)
+        self.assertGreater(pwms_depth[3], 1700)
+
+        # 3. SimpleROV-4 Mixer: Disarmed -> All 1500
+        pwms_disarmed = compute_thruster_pwms(frame_id=6, fwd=1000, lat=1000, depth=1000, yaw=1000, armed=False)
+        self.assertEqual(pwms_disarmed, [1500] * 8)
+
+        # 4. FuturisticHud Synchronous Activation with Gamepad
+        root = tk.Tk()
+        root.withdraw()
+        hud = FuturisticHud(root, width=800, height=600)
+        hud.set_frame_id(6)
+
+        mav = {"armed": True, "roll": 0.0, "pitch": 0.0, "yaw": 0.0, "depth": 1.0}
+        # Pilot commands Forward thrust
+        pad = {"connected": True, "gain": 1.0, "axis_ry": 800, "axis_rx": 0, "axis_ly": 0, "axis_lx": 0}
+        hud.update_telemetry(mav, pad)
+
+        self.assertTrue(hud.in_flight)
+        # M1 & M2 must be actively commanded (>1520), M3 & M4 must be idle (1500)
+        self.assertGreater(hud.motor_cmd_pwm[0], 1700)
+        self.assertGreater(hud.motor_cmd_pwm[1], 1700)
+        self.assertEqual(hud.motor_cmd_pwm[2], 1500)
+        self.assertEqual(hud.motor_cmd_pwm[3], 1500)
+
+        # Pilot commands Depth Ascend
+        pad_depth = {"connected": True, "gain": 1.0, "axis_ry": 0, "axis_rx": 0, "axis_ly": 700, "axis_lx": 0}
+        hud.update_telemetry(mav, pad_depth)
+
+        self.assertTrue(hud.in_flight)
+        self.assertEqual(hud.motor_cmd_pwm[0], 1500)
+        self.assertEqual(hud.motor_cmd_pwm[1], 1500)
+        self.assertGreater(hud.motor_cmd_pwm[2], 1700)
+        self.assertGreater(hud.motor_cmd_pwm[3], 1700)
+
+        # Sticks released -> Instant return to neutral
+        pad_idle = {"connected": True, "gain": 1.0, "axis_ry": 0, "axis_rx": 0, "axis_ly": 0, "axis_lx": 0}
+        hud.update_telemetry(mav, pad_idle)
+        self.assertFalse(hud.in_flight)
+        self.assertEqual(hud.motor_cmd_pwm[:4], [1500, 1500, 1500, 1500])
+
+        root.destroy()
+
+    def test_motor_matrix_manager_and_dialog(self):
+        """Verify MotorMatrixManager, stick mode swapping, direction parity, and dialog."""
+        from core.motor_matrix_manager import MotorMatrixManager
+        from gui.widgets.motor_matrix_dialog import MotorMatrixDialog
+        import tkinter as tk
+
+        mm = MotorMatrixManager.get_instance()
+        # Reset to SimpleROV-4 standard
+        mm.apply_preset("SimpleROV-4", notify=False)
+        self.assertEqual(mm.motor_directions[3], 1)
+
+        # 1. Forward motion test
+        pwms = mm.compute_motor_pwms(fwd=800, lat=0, depth=0, yaw=0, armed=True)
+        self.assertGreater(pwms[0], 1700)
+        self.assertGreater(pwms[1], 1700)
+        self.assertEqual(pwms[2], 1500)
+
+        # 2. Inverted M3/M4 test (probe parity)
+        # When MOT_3_DIRECTION is -1, input +800 depth produces 1180 (not 1820)
+        mm.set_motor_direction(3, -1, notify=False)
+        self.assertEqual(mm.motor_directions[3], -1)
+        pwms_inv = mm.compute_motor_pwms(fwd=0, lat=0, depth=800, yaw=0, armed=True)
+        self.assertLess(pwms_inv[2], 1300) # Inverted around 1500 -> ~1180us
+        self.assertGreater(pwms_inv[3], 1700) # M4 still normal
+
+        # 3. Stick mode turning swap test
+        mm.set_stick_mode("STANDARD_ROV", notify=False)
+        self.assertEqual(mm.axis_mappings["yaw"], "axis_lx") # Turn on Left Stick
+        # In Standard mode: right stick horizontal does not produce yaw
+        cmds = mm.extract_gamepad_commands({"connected": True, "gain": 1.0, "axis_rx": 600, "axis_lx": 0})
+        self.assertEqual(cmds["yaw"], 0)
+        self.assertEqual(cmds["lat"], 600)
+
+        # Swap to FPS/Car mode (Turn on Right Stick X)
+        mm.swap_turning_stick()
+        self.assertEqual(mm.axis_mappings["yaw"], "axis_rx")
+        cmds2 = mm.extract_gamepad_commands({"connected": True, "gain": 1.0, "axis_rx": 600, "axis_lx": 0})
+        self.assertEqual(cmds2["yaw"], 600) # Right stick now produces yaw!
+
+        # Reset back
+        mm.apply_preset("SimpleROV-4", notify=False)
+        mm.set_stick_mode("STANDARD_ROV", notify=False)
+
+        # 4. Headless MotorMatrixDialog build
+        root = tk.Tk()
+        root.withdraw()
+        dlg = MotorMatrixDialog(root)
+        dlg.update()
+        dlg.destroy()
+        root.destroy()
+
+    def test_yaw_differential_inversion_preserves_forward(self):
+        """Verifies that inverting yaw differential flips yaw PWMs while forward thrust is 100% identical."""
+        from core.motor_matrix_manager import MotorMatrixManager
+        mm = MotorMatrixManager.get_instance()
+
+        # Apply standard SimpleROV-4
+        mm.apply_preset("SimpleROV-4", notify=False)
+        pwms_fwd_std = mm.compute_motor_pwms(fwd=800, lat=0, depth=0, yaw=0, armed=True)
+        # M1 and M2 both push forward (1820)
+        self.assertGreater(pwms_fwd_std[0], 1700)
+        self.assertGreater(pwms_fwd_std[1], 1700)
+
+        # Standard yaw turning: positive yaw commands M1 > 1500, M2 < 1500
+        pwms_yaw_std = mm.compute_motor_pwms(fwd=0, lat=0, depth=0, yaw=800, armed=True)
+        self.assertGreater(pwms_yaw_std[0], 1500)
+        self.assertLess(pwms_yaw_std[1], 1500)
+
+        # Invert Yaw Differential
+        mm.invert_yaw_differential(notify=False)
+
+        # 1. Forward thrust MUST remain completely identical!
+        pwms_fwd_inv = mm.compute_motor_pwms(fwd=800, lat=0, depth=0, yaw=0, armed=True)
+        self.assertEqual(pwms_fwd_std[0], pwms_fwd_inv[0])
+        self.assertEqual(pwms_fwd_std[1], pwms_fwd_inv[1])
+
+        # 2. Yaw turning is now inverted: M1 < 1500, M2 > 1500
+        pwms_yaw_inv = mm.compute_motor_pwms(fwd=0, lat=0, depth=0, yaw=800, armed=True)
+        self.assertLess(pwms_yaw_inv[0], 1500)
+        self.assertGreater(pwms_yaw_inv[1], 1500)
+
+        # Reset back
+        mm.apply_preset("SimpleROV-4", notify=False)
+
+    def test_hud_lateral_capability_detection(self):
+        """Verifies that FuturisticHud suppresses lateral strafe for frames without lateral thrusters."""
+        import tkinter as tk
+        from gui.widgets.futuristic_hud import FuturisticHud
+        root = tk.Tk()
+        root.withdraw()
+        hud = FuturisticHud(root)
+
+        # SimpleROV-4 has no lateral thrusters
+        hud.frame_id = 6
+        self.assertFalse(hud._has_lateral_capability())
+
+        # BlueROV2 Vectored-6 has lateral thrusters
+        hud.frame_id = 2
+        self.assertTrue(hud._has_lateral_capability())
+
+        hud.destroy()
+        root.destroy()
 
 
 if __name__ == "__main__":

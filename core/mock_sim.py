@@ -9,6 +9,8 @@ import math
 import random
 import threading
 from typing import Dict, Any, List, Optional, Callable
+from core.ardusub_defs import compute_thruster_pwms
+from core.motor_matrix_manager import MotorMatrixManager
 
 
 class MockSimEngine:
@@ -68,6 +70,23 @@ class MockSimEngine:
                 self.motor_pwms[idx] = 1500
 
             threading.Thread(target=_revert, daemon=True).start()
+ 
+    def set_manual_control(self, x: int, y: int, z: int, r: int, frame_id: int = 6):
+        """Update simulated thruster PWMs based on gamepad manual control and frame mixer."""
+        if not self.armed:
+            self.motor_pwms = [1500] * 8
+            return
+        matrix_mgr = MotorMatrixManager.get_instance()
+        self.motor_pwms = compute_thruster_pwms(
+            frame_id,
+            fwd=x,
+            lat=y,
+            depth=z,
+            yaw=r,
+            armed=True,
+            motor_directions=matrix_mgr.motor_directions,
+            custom_matrix=matrix_mgr.matrix
+        )
 
     def _sim_loop(self):
         """Generates periodic telemetry packets at 20Hz."""

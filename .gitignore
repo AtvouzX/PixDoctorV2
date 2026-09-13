@@ -52,7 +52,6 @@ test_params.param
 .coverage
 htmlcov/
 .pytest_cache/
-gamepad_config.json
 
 # PlatformIO
 .pio/

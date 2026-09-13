@@ -25,8 +25,15 @@ from gui.theme import (
 )
 from gui.widgets.mono_widgets import RetroCard
 from gui.widgets.gamepad_overlay import GamepadOverlay
-from core.gamepad_manager import GamepadManager, GAMEPAD_ACTIONS, DEFAULT_BUTTON_MAPPINGS
+from core.gamepad_manager import (
+    GamepadManager,
+    GAMEPAD_ACTIONS,
+    DEFAULT_BUTTON_MAPPINGS,
+    WIRELESS_PROFILES,
+)
 from core.mavlink_manager import MavlinkManager
+from core.motor_matrix_manager import MotorMatrixManager
+from gui.widgets.motor_matrix_dialog import MotorMatrixDialog
 
 
 BUTTON_DISPLAY_NAMES = [
@@ -61,6 +68,7 @@ class ControllerView(tk.Frame):
         self.gamepad_mgr = gamepad_mgr
         self.mav_mgr = mav_mgr
         self.streaming_enabled = tk.BooleanVar(value=True)
+        self.matrix_mgr = MotorMatrixManager.get_instance()
 
         # Calibration Tk variables
         self.deadzone_var = tk.DoubleVar(value=self.gamepad_mgr.state.deadzone_pct * 100)
@@ -113,6 +121,13 @@ class ControllerView(tk.Frame):
                 width=5,
                 command=lambda v=g_val: self.gamepad_mgr.set_gain(v)
             ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            ctrl_bar,
+            text="[ CONFIGURE MOTOR MATRIX & STICKS ]",
+            style="Invert.TButton",
+            command=self._open_motor_matrix_dialog
+        ).pack(side=tk.RIGHT, padx=4)
 
         # 2. Bottom Section: Split Columns (Calibration & Mapping)
         bot_split = tk.Frame(self, bg=COLOR_BG)
@@ -267,7 +282,42 @@ class ControllerView(tk.Frame):
         ).grid(row=1, column=1, sticky="w")
 
     def _build_mapping_panel(self, parent: tk.Frame):
-        """Constructs button remapping editor, action dropdowns, and presets."""
+        # Wireless Profile Row
+        prof_row = tk.Frame(parent, bg=COLOR_SURFACE)
+        prof_row.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(prof_row, text="WIRELESS PROFILE:", bg=COLOR_SURFACE, fg=COLOR_TEXT_WHITE, font=FONT_SMALL, width=16, anchor="w").pack(side=tk.LEFT)
+        self.profile_var = tk.StringVar(value=self.gamepad_mgr.state.wireless_profile)
+        self.cb_profile = ttk.Combobox(
+            prof_row,
+            textvariable=self.profile_var,
+            values=list(WIRELESS_PROFILES.keys()),
+            state="readonly",
+            width=18
+        )
+        self.cb_profile.pack(side=tk.LEFT, padx=(0, 8))
+        self.cb_profile.bind("<<ComboboxSelected>>", self._on_wireless_profile_changed)
+
+        self.lbl_profile_desc = tk.Label(
+            prof_row,
+            text=WIRELESS_PROFILES.get(self.gamepad_mgr.state.wireless_profile, ""),
+            bg=COLOR_SURFACE,
+            fg=COLOR_TEXT_DIM,
+            font=FONT_SMALL
+        )
+        self.lbl_profile_desc.pack(side=tk.LEFT)
+
+        # Live Button Monitor / Tester Readout
+        self.lbl_btn_monitor = tk.Label(
+            parent,
+            text="LAST INPUT: NONE (Raw #0) -> ACTION: NONE",
+            bg=COLOR_SURFACE,
+            fg=COLOR_TEXT_DIM,
+            font=FONT_MONO,
+            anchor="w"
+        )
+        self.lbl_btn_monitor.pack(fill=tk.X, pady=(0, 6))
+
         # Top Remap Row: Button Selector + Action Dropdown + Apply
         assign_box = tk.Frame(parent, bg=COLOR_SURFACE)
         assign_box.pack(fill=tk.X, pady=(0, 6))
@@ -358,6 +408,12 @@ class ControllerView(tk.Frame):
             style="Retro.TButton",
             command=self._save_config
         ).pack(side=tk.RIGHT)
+
+    def _on_wireless_profile_changed(self, event=None):
+        prof = self.profile_var.get()
+        self.gamepad_mgr.set_wireless_profile(prof)
+        desc = WIRELESS_PROFILES.get(prof, "")
+        self.lbl_profile_desc.config(text=desc)
 
     def _on_visualizer_button_clicked(self, btn_name: str):
         """When user clicks a button on the visualizer canvas, select it in the editor."""
@@ -477,23 +533,32 @@ class ControllerView(tk.Frame):
             text=f"CENTER OFFSETS: LX:{off_lx:+5d} | LY:{off_ly:+5d} | RX:{off_rx:+5d} | RY:{off_ry:+5d}"
         )
 
-        # Auto-highlight recently pressed button in treeview if user is binding
+        # Update live button monitor
         last_pressed = state_dict.get("last_pressed_button")
-        if last_pressed and self.overlay.selected_button != last_pressed:
-            # Subtle indicator
-            pass
+        raw_num = state_dict.get("last_pressed_raw_btn", 0)
+        if last_pressed:
+            mapping = state_dict.get("button_mappings", {})
+            action = mapping.get(last_pressed, "NONE")
+            raw_str = f"Raw #{raw_num}" if raw_num > 0 else "XInput"
+            self.lbl_btn_monitor.config(
+                text=f"LAST INPUT: {last_pressed.upper()} ({raw_str}) -> ACTION: {action}",
+                fg=COLOR_TEXT_WHITE
+            )
 
         if self.streaming_enabled.get() and state_dict.get("connected", False) and self.mav_mgr.is_connected():
-            gain = state_dict.get("gain", 0.5)
-            # ArduSub MANUAL_CONTROL mapping:
-            # x: Forward / Reverse (-1000..1000)
-            # y: Lateral Strafe (-1000..1000)
-            # z: Throttle / Depth (0..1000)
-            # r: Yaw Turn (-1000..1000)
-            fwd = int(state_dict.get("axis_ry", 0) * gain)
-            lat = int(state_dict.get("axis_rx", 0) * gain)
-            throttle = int(state_dict.get("axis_ly", 0) * gain)
-            yaw = int(state_dict.get("axis_lx", 0) * gain)
+            cmds = self.matrix_mgr.extract_gamepad_commands(state_dict)
+            fwd = cmds["fwd"]
+            lat = cmds["lat"]
+            throttle = cmds["depth"]
+            yaw = cmds["yaw"]
             buttons = state_dict.get("buttons_bitmask", 0)
 
             self.mav_mgr.send_manual_control(x=fwd, y=lat, z=throttle, r=yaw, buttons=buttons)
+
+    def _open_motor_matrix_dialog(self):
+        """Open graphical motor allocation matrix and stick configuration dialog."""
+        MotorMatrixDialog(
+            self,
+            mav_mgr=self.mav_mgr,
+            gamepad_mgr=self.gamepad_mgr
+        )

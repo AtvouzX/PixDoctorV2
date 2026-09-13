@@ -4,7 +4,7 @@ Comprehensive definitions for vehicle frames (SimpleROV-4 default),
 flight modes, thruster channels, MAVLink commands, and failsafes.
 """
 
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 
 # Vehicle Frame Configurations for ArduSub
 # ArduSub uses parameter FRAME_CONFIG
@@ -72,7 +72,14 @@ FRAMES = {
         "name": "BlueROV1 (6-Thruster)",
         "description": "Original BlueROV1 layout with dual vertical and quad horizontal.",
         "thruster_count": 6,
-        "thrusters": []
+        "thrusters": [
+            {"num": 1, "name": "Forward Port", "role": "Horizontal Fwd Left", "color": "#ffffff", "pos": (-0.6, 0.4), "angle": 0},
+            {"num": 2, "name": "Forward Starboard", "role": "Horizontal Fwd Right", "color": "#ffffff", "pos": (0.6, 0.4), "angle": 0},
+            {"num": 3, "name": "Aft Port", "role": "Horizontal Aft Left", "color": "#ffffff", "pos": (-0.6, -0.4), "angle": 0},
+            {"num": 4, "name": "Aft Starboard", "role": "Horizontal Aft Right", "color": "#ffffff", "pos": (0.6, -0.4), "angle": 0},
+            {"num": 5, "name": "Vertical Port", "role": "Vertical Left", "color": "#ffffff", "pos": (-0.4, 0.0), "angle": 90},
+            {"num": 6, "name": "Vertical Starboard", "role": "Vertical Right", "color": "#ffffff", "pos": (0.4, 0.0), "angle": 90},
+        ]
     },
     4: {
         "id": 4,
@@ -80,7 +87,14 @@ FRAMES = {
         "name": "Vectored-90 Frame",
         "description": "Vectored horizontal thrusters mounted at 90-degree orthogonal angles.",
         "thruster_count": 6,
-        "thrusters": []
+        "thrusters": [
+            {"num": 1, "name": "Forward Port", "role": "Vectored Fwd Left", "color": "#ffffff", "pos": (-0.6, 0.5), "angle": 45},
+            {"num": 2, "name": "Forward Starboard", "role": "Vectored Fwd Right", "color": "#ffffff", "pos": (0.6, 0.5), "angle": -45},
+            {"num": 3, "name": "Aft Port", "role": "Vectored Aft Left", "color": "#ffffff", "pos": (-0.6, -0.5), "angle": -45},
+            {"num": 4, "name": "Aft Starboard", "role": "Vectored Aft Right", "color": "#ffffff", "pos": (0.6, -0.5), "angle": 45},
+            {"num": 5, "name": "Vertical Port", "role": "Vertical Left", "color": "#ffffff", "pos": (-0.4, 0.0), "angle": 90},
+            {"num": 6, "name": "Vertical Starboard", "role": "Vertical Right", "color": "#ffffff", "pos": (0.4, 0.0), "angle": 90},
+        ]
     },
     8: {
         "id": 8,
@@ -88,15 +102,29 @@ FRAMES = {
         "name": "Vectored-6DOF-90 Frame",
         "description": "8-Thruster Heavy configuration with 90-degree orthogonal vector angles.",
         "thruster_count": 8,
-        "thrusters": []
+        "thrusters": [
+            {"num": 1, "name": "Forward Port", "role": "Vectored Fwd Left", "color": "#ffffff", "pos": (-0.6, 0.6), "angle": 45},
+            {"num": 2, "name": "Forward Starboard", "role": "Vectored Fwd Right", "color": "#ffffff", "pos": (0.6, 0.6), "angle": -45},
+            {"num": 3, "name": "Aft Port", "role": "Vectored Aft Left", "color": "#ffffff", "pos": (-0.6, -0.6), "angle": -45},
+            {"num": 4, "name": "Aft Starboard", "role": "Vectored Aft Right", "color": "#ffffff", "pos": (0.6, -0.6), "angle": 45},
+            {"num": 5, "name": "Vert Fwd Port", "role": "Vertical Fwd Left", "color": "#ffffff", "pos": (-0.4, 0.3), "angle": 90},
+            {"num": 6, "name": "Vert Fwd Starboard", "role": "Vertical Fwd Right", "color": "#ffffff", "pos": (0.4, 0.3), "angle": 90},
+            {"num": 7, "name": "Vert Aft Port", "role": "Vertical Aft Left", "color": "#ffffff", "pos": (-0.4, -0.3), "angle": 90},
+            {"num": 8, "name": "Vert Aft Starboard", "role": "Vertical Aft Right", "color": "#ffffff", "pos": (0.4, -0.3), "angle": 90},
+        ]
     },
     7: {
         "id": 7,
         "code": "Custom",
         "name": "Custom User Frame",
         "description": "Custom thruster allocation matrix configured via custom motor parameters.",
-        "thruster_count": 8,
-        "thrusters": []
+        "thruster_count": 4,
+        "thrusters": [
+            {"num": 1, "name": "Port Horizontal", "role": "Horizontal Thrust (Left)", "color": "#ffffff", "pos": (-0.7, -0.4), "angle": 0},
+            {"num": 2, "name": "Starboard Horizontal", "role": "Horizontal Thrust (Right)", "color": "#ffffff", "pos": (0.7, -0.4), "angle": 0},
+            {"num": 3, "name": "Vertical Front/Left", "role": "Vertical Depth (Front/1)", "color": "#ffffff", "pos": (-0.4, 0.4), "angle": 90},
+            {"num": 4, "name": "Vertical Back/Right", "role": "Vertical Depth (Back/2)", "color": "#ffffff", "pos": (0.4, 0.4), "angle": 90},
+        ]
     }
 }
 
@@ -252,3 +280,112 @@ KEY_PARAMETERS = {
     "SERVO11_FUNCTION": {"name": "SERVO11_FUNCTION", "default": 12, "min": 0, "max": 120, "desc": "AUX 3 Function (e.g. 12 = Lumen Lights 1)", "group": "Actuators & RC"},
     "SERVO12_FUNCTION": {"name": "SERVO12_FUNCTION", "default": 13, "min": 0, "max": 120, "desc": "AUX 4 Function (e.g. 13 = Lumen Lights 2)", "group": "Actuators & RC"},
 }
+
+
+def compute_thruster_pwms(
+    frame_id: int,
+    fwd: int,
+    lat: int,
+    depth: int,
+    yaw: int,
+    armed: bool = True,
+    motor_directions: Optional[Dict[int, int]] = None,
+    custom_matrix: Optional[Dict[str, Dict[int, float]]] = None
+) -> List[int]:
+    """
+    Computes frame-accurate motor PWM values (1100..1900us, 1500 neutral) for ArduSub frames.
+    Synchronously drives thrusters based on pilot stick commands, vehicle geometry,
+    and direction reversals (MOT_x_DIRECTION) to guarantee 100% parity with physical probes.
+    """
+    if not armed:
+        return [1500] * 8
+
+    f = max(-1.0, min(1.0, fwd / 1000.0))
+    l = max(-1.0, min(1.0, lat / 1000.0))
+    d = max(-1.0, min(1.0, depth / 1000.0))
+    y = max(-1.0, min(1.0, yaw / 1000.0))
+
+    # Thruster output factors (-1.0 to 1.0)
+    m = [0.0] * 8
+
+    if custom_matrix:
+        m_fwd = custom_matrix.get("fwd", {})
+        m_lat = custom_matrix.get("lat", {})
+        m_depth = custom_matrix.get("depth", {})
+        m_yaw = custom_matrix.get("yaw", {})
+        for i in range(8):
+            m[i] = (
+                f * m_fwd.get(i + 1, 0.0) +
+                l * m_lat.get(i + 1, 0.0) +
+                d * m_depth.get(i + 1, 0.0) +
+                y * m_yaw.get(i + 1, 0.0)
+            )
+
+    elif frame_id in (6, 7):
+        # Frame 6: SimpleROV-4, Frame 7: Custom 4-thruster
+        # M1: Port Horizontal, M2: Starboard Horizontal, M3: Vert Left, M4: Vert Right
+        m[0] = f + y
+        m[1] = f - y
+        m[2] = d
+        m[3] = d
+
+    elif frame_id == 5:
+        # Frame 5: SimpleROV-3
+        # M1: Port Horizontal, M2: Starboard Horizontal, M3: Center Vertical
+        m[0] = f + y
+        m[1] = f - y
+        m[2] = d
+
+    elif frame_id in (2, 4):
+        # Frame 2: BlueROV2 Vectored-6, Frame 4: Vectored-90
+        # M1 (Fwd Port 45°): +f + l + y
+        # M2 (Fwd Stbd -45°): +f - l - y
+        # M3 (Aft Port -45°): +f - l + y
+        # M4 (Aft Stbd 45°): +f + l - y
+        # M5 (Vert Port 90°): +d
+        # M6 (Vert Stbd 90°): +d
+        m[0] = f + l + y
+        m[1] = f - l - y
+        m[2] = f - l + y
+        m[3] = f + l - y
+        m[4] = d
+        m[5] = d
+
+    elif frame_id in (3, 8):
+        # Frame 3: BlueROV2 Heavy (8-Thruster), Frame 8: Vectored-6DOF-90
+        # M1..M4: Vectored horizontal
+        # M5..M8: 4 Vertical thrusters
+        m[0] = f + l + y
+        m[1] = f - l - y
+        m[2] = f - l + y
+        m[3] = f + l - y
+        m[4] = d
+        m[5] = d
+        m[6] = d
+        m[7] = d
+
+    elif frame_id == 1:
+        # Frame 1: BlueROV1
+        m[0] = f + y
+        m[1] = f - y
+        m[2] = f + y
+        m[3] = f - y
+        m[4] = d
+        m[5] = d
+
+    else:
+        # Fallback default (SimpleROV-4)
+        m[0] = f + y
+        m[1] = f - y
+        m[2] = d
+        m[3] = d
+
+    pwms = []
+    for idx, val in enumerate(m):
+        dir_mul = motor_directions.get(idx + 1, 1) if motor_directions else 1
+        effective_factor = max(-1.0, min(1.0, val * dir_mul))
+        pwm = 1500 + int(effective_factor * 400.0)
+        pwms.append(pwm)
+
+    return pwms
+

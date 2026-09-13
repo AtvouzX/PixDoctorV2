@@ -1,0 +1,30 @@
+{
+  "wireless_profile": "PLAYSTATION",
+  "gain": 1.0,
+  "deadzone_pct": 0.1,
+  "expo": 0.0,
+  "invert_lx": true,
+  "invert_ly": true,
+  "invert_rx": false,
+  "invert_ry": false,
+  "center_offset_lx": 0,
+  "center_offset_ly": 0,
+  "center_offset_rx": 0,
+  "center_offset_ry": 0,
+  "button_mappings": {
+    "btn_start": "TOGGLE_ARM",
+    "btn_back": "CYCLE_MODE",
+    "btn_a": "DISARM",
+    "btn_b": "NONE",
+    "btn_x": "CAMERA_TILT_DOWN",
+    "btn_y": "CAMERA_TILT_UP",
+    "btn_lb": "LIGHTS_OFF",
+    "btn_rb": "LIGHTS_CYCLE",
+    "btn_l3": "NONE",
+    "btn_r3": "CAMERA_TILT_CENTER",
+    "dpad_up": "GAIN_INCREASE",
+    "dpad_down": "GAIN_DECREASE",
+    "dpad_left": "MODE_MANUAL",
+    "dpad_right": "MODE_ALT_HOLD"
+  }
+}
