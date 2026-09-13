@@ -179,6 +179,24 @@ NANO_PROBE_PINS: List[Dict[str, Any]] = [
     {"ch": 14, "pin": "A2",  "pixhawk": "AUX 6",  "role": "Aux 6 / General PWM"},
 ]
 
+# ESP32 DevKit V1 (PixDoctorESP32) Probe Physical Pin Assignments
+ESP32_PROBE_PINS: List[Dict[str, Any]] = [
+    {"ch": 1,  "pin": "GPIO 13", "pixhawk": "MAIN 1", "role": "Thruster 1 (Port Horiz)"},
+    {"ch": 2,  "pin": "GPIO 14", "pixhawk": "MAIN 2", "role": "Thruster 2 (Stbd Horiz)"},
+    {"ch": 3,  "pin": "GPIO 27", "pixhawk": "MAIN 3", "role": "Thruster 3 (Vert 1)"},
+    {"ch": 4,  "pin": "GPIO 26", "pixhawk": "MAIN 4", "role": "Thruster 4 (Vert 2)"},
+    {"ch": 5,  "pin": "GPIO 25", "pixhawk": "MAIN 5", "role": "Thruster 5 / Aux"},
+    {"ch": 6,  "pin": "GPIO 33", "pixhawk": "MAIN 6", "role": "Thruster 6 / Aux"},
+    {"ch": 7,  "pin": "GPIO 32", "pixhawk": "MAIN 7", "role": "Thruster 7 / Aux"},
+    {"ch": 8,  "pin": "GPIO 23", "pixhawk": "MAIN 8", "role": "Thruster 8 / Aux"},
+    {"ch": 9,  "pin": "GPIO 22", "pixhawk": "AUX 1",  "role": "Aux 1 / Relay 1"},
+    {"ch": 10, "pin": "GPIO 21", "pixhawk": "AUX 2",  "role": "Aux 2 / Camera Tilt"},
+    {"ch": 11, "pin": "GPIO 19", "pixhawk": "AUX 3",  "role": "Aux 3 / Lumen Lights 1"},
+    {"ch": 12, "pin": "GPIO 18", "pixhawk": "AUX 4",  "role": "Aux 4 / Lumen Lights 2"},
+    {"ch": 13, "pin": "GPIO 17", "pixhawk": "AUX 5",  "role": "Aux 5 / Gripper"},
+    {"ch": 14, "pin": "GPIO 16", "pixhawk": "AUX 6",  "role": "Aux 6 / General PWM"},
+]
+
 # Pixhawk 2.4.8 Leak Detector Pin Options (AUX Pins / Virtual GPIO)
 LEAK_PINS = [
     {"pin": 50, "name": "AUX 1 (Pin 50)", "gpio": 50},

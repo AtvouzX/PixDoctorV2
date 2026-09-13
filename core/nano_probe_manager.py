@@ -211,8 +211,10 @@ class NanoProbeManager:
             elif pkt_type == "PONG":
                 with self.state.lock:
                     self.state.firmware_version = pkt.get("fw", "2.0.0")
-                    self.state.device_info = f"PixDoctorNano ({pkt.get('mcu', 'SAMD21')})"
-                self.log(f"[Nano Probe] Identified: {self.state.device_info} FW:{self.state.firmware_version}", "INFO")
+                    dev_name = pkt.get("device", "PixDoctorProbe")
+                    mcu_name = pkt.get("mcu", "MCU")
+                    self.state.device_info = f"{dev_name} ({mcu_name})"
+                self.log(f"[Probe] Identified: {self.state.device_info} FW:{self.state.firmware_version}", "INFO")
 
         except json.JSONDecodeError:
             pass

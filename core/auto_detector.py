@@ -70,17 +70,16 @@ class AutoDetector:
                     if "BTHENUM" in hwid_upper or "BLUETOOTH" in desc_upper:
                         continue
 
-                    # 1. Identify Arduino Nano 33 IoT (PixDoctorNano)
-                    # VID 0x2341 PID 0x8057 (SAMD21) or Arduino/Nano in description
-                    is_nano = False
+                    # 1. Identify Probe: Arduino Nano 33 IoT (PixDoctorNano) or ESP32 (PixDoctorESP32)
+                    is_probe = False
                     if vid == 0x2341 and pid == 0x8057:
-                        is_nano = True
+                        is_probe = True
                     elif "2341" in hwid_upper and "8057" in hwid_upper:
-                        is_nano = True
-                    elif "NANO 33" in desc_upper or "SAMD21" in desc_upper or "ARDUINO NANO" in desc_upper:
-                        is_nano = True
+                        is_probe = True
+                    elif any(tag in desc_upper for tag in ("NANO 33", "SAMD21", "ARDUINO NANO", "PIXDOCTOR", "ESP32")):
+                        is_probe = True
 
-                    if is_nano:
+                    if is_probe:
                         nano_candidate = dev
                         continue
 

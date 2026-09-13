@@ -1,6 +1,6 @@
 # PixDoctorV2
 
-Configuration and diagnostics tool for Pixhawk 2.4.8 running ArduSub 4.7.1, with real-time PWM pulse verification via an Arduino Nano 33 IoT probe (PixDoctorNano) and native gamepad control.
+Configuration and diagnostics tool for Pixhawk 2.4.8 running ArduSub 4.7.1, with real-time PWM pulse verification via an external MCU probe (Arduino Nano 33 IoT or ESP32) and native gamepad control.
 
 ## Quick Start
 
@@ -14,22 +14,22 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Auto-detect will connect to connected Pixhawk and Arduino Nano 33 IoT serial ports.
+Auto-detect will connect to connected Pixhawk and MCU probe serial ports.
 
 ## Hardware Wiring (SimpleROV-4)
 
-Connect Pixhawk servo signal pins to the Arduino Nano 33 IoT:
+Connect Pixhawk servo signal pins to your probe MCU:
 
-| Channel | Pixhawk Pin | Nano 33 IoT Pin | Function |
-| :--- | :--- | :--- | :--- |
-| Thruster 1 | MAIN 1 (S) | D2 | Port Horizontal Motor |
-| Thruster 2 | MAIN 2 (S) | D3 | Starboard Horizontal Motor |
-| Thruster 3 | MAIN 3 (S) | D4 | Vertical Front Motor |
-| Thruster 4 | MAIN 4 (S) | D5 | Vertical Back Motor |
-| Camera Tilt | AUX 2 (S) | D11 | Tilt Servo |
-| Lights | AUX 3 (S) | D12 | Lumen Subsea Lights |
-| Leak Sensor | AUX 6 (S) | - | Internal Leak Probe (LEAK1_PIN=55) |
-| Common GND | Pixhawk (-) | GND | Shared Ground (Mandatory) |
+| Channel | Pixhawk Pin | Nano 33 IoT Pin | ESP32 Pin | Function |
+| :--- | :--- | :--- | :--- | :--- |
+| Thruster 1 | MAIN 1 (S) | D2 | GPIO 13 | Port Horizontal Motor |
+| Thruster 2 | MAIN 2 (S) | D3 | GPIO 14 | Starboard Horizontal Motor |
+| Thruster 3 | MAIN 3 (S) | D4 | GPIO 27 | Vertical Front Motor |
+| Thruster 4 | MAIN 4 (S) | D5 | GPIO 26 | Vertical Back Motor |
+| Camera Tilt | AUX 2 (S) | D11 | GPIO 21 | Tilt Servo |
+| Lights | AUX 3 (S) | D12 | GPIO 19 | Lumen Subsea Lights |
+| Leak Sensor | AUX 6 (S) | - | - | Internal Leak Probe (LEAK1_PIN=55) |
+| Common GND | Pixhawk (-) | GND | GND | Shared Ground (Mandatory) |
 
 ## Gamepad Controls
 
@@ -47,17 +47,37 @@ Connect Pixhawk servo signal pins to the Arduino Nano 33 IoT:
 | Left Bumper (LB) | Lights Off |
 | D-Pad Up / Down | Adjust Gain Preset |
 
-## Flashing the Arduino Nano 33 IoT Probe
+## Flashing Probe MCU
 
-The firmware source is included in the `PixDoctorNano` directory in this repository.
+Both firmware projects are located in the `mcu/` directory:
 
-Using PlatformIO CLI:
+- Arduino Nano 33 IoT:
 ```bash
-cd PixDoctorNano
+cd mcu/PixDoctorNano
 pio run -t upload
 ```
 
-Or open the `PixDoctorNano` folder in VS Code with PlatformIO, or Arduino IDE (board: Arduino NANO 33 IoT), and upload.
+- ESP32 DevKit V1:
+```bash
+cd mcu/PixDoctorESP32
+pio run -t upload
+```
+
+## Repository Structure
+
+```
+PixDoctorV2/
+├── core/                  # MAVLink, Gamepad, Probe, and parameter drivers
+├── gui/                   # Monochrome retro Tkinter GUI and views
+├── mcu/
+│   ├── PixDoctorNano/     # Arduino Nano 33 IoT probe firmware (PlatformIO)
+│   └── PixDoctorESP32/    # ESP32 probe firmware (PlatformIO)
+├── tests/                 # Automated test suite
+├── main.py                # Desktop app entry point
+├── requirements.txt       # Python dependencies
+├── LICENSE                # MIT License
+└── README.md
+```
 
 ## License
 
