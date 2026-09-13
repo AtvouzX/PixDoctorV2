@@ -1,0 +1,4 @@
+# PixDoctorV2 - Pixhawk 2.4.8 (ArduSub 4.7.1) Lightweight Requirements
+# Note: Native XInput and WinMM gamepad support uses Python's built-in ctypes (no extra install needed)
+pymavlink>=2.4.40
+pyserial>=3.5
