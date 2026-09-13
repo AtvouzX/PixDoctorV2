@@ -59,22 +59,6 @@ pio run -t upload
 
 Or open the `PixDoctorNano` folder in VS Code with PlatformIO, or Arduino IDE (board: Arduino NANO 33 IoT), and upload.
 
-## Repository Structure
-
-```
-PixDoctorV2/
-├── core/               # MAVLink, Gamepad, Nano probe, and parameter drivers
-├── gui/                # Monochrome retro Tkinter GUI and views
-├── tests/              # Automated test suite
-├── PixDoctorNano/       # Arduino Nano 33 IoT probe firmware (PlatformIO)
-│   ├── src/main.cpp
-│   └── platformio.ini
-├── main.py             # Desktop app entry point
-├── requirements.txt    # Python dependencies
-├── LICENSE             # MIT License
-└── README.md
-```
-
 ## License
 
 MIT License.
