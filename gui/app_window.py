@@ -63,6 +63,8 @@ class PixDoctorApp(tk.Tk):
         )
         self.nano_mgr = NanoProbeManager(log_callback=self._log_event)
         self.gamepad_mgr = GamepadManager(action_callback=self._on_gamepad_action)
+        self._cam_tilt_pwm: int = 1500
+        self._lights_pwm: int = 1100
 
         # 2. Auto-Detector (Default ON: scans ports and auto-connects)
         self.auto_detector = AutoDetector(
@@ -354,12 +356,38 @@ class PixDoctorApp(tk.Tk):
             # Cycle through Manual (19) -> Depth Hold (2) -> Stabilize (0)
             next_mode = 2 if curr_mode == 19 else (0 if curr_mode == 2 else 19)
             self.mav_mgr.set_flight_mode(next_mode)
+        elif action == "MODE_MANUAL":
+            self.mav_mgr.set_flight_mode(19)
+        elif action == "MODE_ALT_HOLD":
+            self.mav_mgr.set_flight_mode(2)
+        elif action == "MODE_STABILIZE":
+            self.mav_mgr.set_flight_mode(0)
         elif action == "GAIN_INCREASE":
             g = min(1.0, self.gamepad_mgr.state.gain + 0.25)
             self.gamepad_mgr.set_gain(g)
         elif action == "GAIN_DECREASE":
             g = max(0.25, self.gamepad_mgr.state.gain - 0.25)
             self.gamepad_mgr.set_gain(g)
+        elif action == "CAMERA_TILT_UP":
+            self._cam_tilt_pwm = min(1900, self._cam_tilt_pwm + 50)
+            self.mav_mgr.set_servo_override(10, self._cam_tilt_pwm)
+        elif action == "CAMERA_TILT_DOWN":
+            self._cam_tilt_pwm = max(1100, self._cam_tilt_pwm - 50)
+            self.mav_mgr.set_servo_override(10, self._cam_tilt_pwm)
+        elif action == "CAMERA_TILT_CENTER":
+            self._cam_tilt_pwm = 1500
+            self.mav_mgr.set_servo_override(10, 1500)
+        elif action == "LIGHTS_CYCLE":
+            steps = [1100, 1300, 1500, 1900]
+            try:
+                curr_idx = steps.index(self._lights_pwm)
+                self._lights_pwm = steps[(curr_idx + 1) % len(steps)]
+            except ValueError:
+                self._lights_pwm = 1300
+            self.mav_mgr.set_servo_override(11, self._lights_pwm)
+        elif action == "LIGHTS_OFF":
+            self._lights_pwm = 1100
+            self.mav_mgr.set_servo_override(11, 1100)
 
     def _toggle_sim(self):
         """Toggle offline mock simulator."""

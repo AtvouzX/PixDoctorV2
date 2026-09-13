@@ -136,6 +136,38 @@ class TestPixDoctorV2Core(unittest.TestCase):
         mm.stop_motor_stream()
         self.assertFalse(mm._motor_stream_active)
 
+    def test_gamepad_calibration_and_mapping(self):
+        """Verify stick calibration, zero-tare, deadzone, expo, and button remapping."""
+        gm = GamepadManager()
+        
+        # Deadzone test
+        # Raw 1000 with 10% deadzone (~3276) should return 0
+        norm_zero = gm._normalize_stick_calibrated(raw_val=1000, center_offset=0, invert=False, deadzone_pct=0.10, expo=0.0)
+        self.assertEqual(norm_zero, 0)
+
+        # Raw full throw 32767 should scale to 1000
+        norm_full = gm._normalize_stick_calibrated(raw_val=32767, center_offset=0, invert=False, deadzone_pct=0.10, expo=0.0)
+        self.assertEqual(norm_full, 1000)
+
+        # Inversion test
+        norm_inv = gm._normalize_stick_calibrated(raw_val=32767, center_offset=0, invert=True, deadzone_pct=0.10, expo=0.0)
+        self.assertEqual(norm_inv, -1000)
+
+        # Center zero-tare test: simulated stick drift of +5000
+        gm.state.raw_lx = 5000
+        gm.calibrate_centers()
+        self.assertEqual(gm.state.center_offset_lx, 5000)
+        # Now raw 5000 minus offset 5000 should be 0
+        norm_tared = gm._normalize_stick_calibrated(raw_val=5000, center_offset=gm.state.center_offset_lx, invert=False, deadzone_pct=0.10, expo=0.0)
+        self.assertEqual(norm_tared, 0)
+
+        # Button mapping test
+        gm.set_button_mapping("btn_a", "CAMERA_TILT_UP")
+        self.assertEqual(gm.state.button_mappings["btn_a"], "CAMERA_TILT_UP")
+        
+        gm.reset_mappings_to_default()
+        self.assertEqual(gm.state.button_mappings["btn_a"], "DISARM")
+
 
 if __name__ == "__main__":
     unittest.main()

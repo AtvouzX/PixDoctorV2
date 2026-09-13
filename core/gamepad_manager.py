@@ -2,9 +2,13 @@
 PixDoctorV2 - Dual-Engine Native Windows Wireless Gamepad & XInput Manager.
 Supports both Cable Mode (XInput 1.4/1.3 slots 0..3) and Wireless / Bluetooth Mode
 (DirectInput / WinMM joyGetPosEx) without requiring any external pip dependencies.
+Includes full axis calibration, zero-tare center drift compensation, exponential
+response curves, and customizable button action mapping with persistence.
 """
 
+import os
 import time
+import json
 import ctypes
 import threading
 from typing import Dict, Any, Optional, Callable
@@ -63,9 +67,44 @@ class JOYINFOEX(ctypes.Structure):
 
 JOY_RETURNALL = 0x000000FF
 
+# ==================== ROV ACTION DEFINITIONS ====================
+GAMEPAD_ACTIONS: Dict[str, str] = {
+    "TOGGLE_ARM": "Toggle Arm / Disarm Safety State",
+    "DISARM": "Emergency Disarm & Kill Thrusters",
+    "CYCLE_MODE": "Cycle Flight Mode (Manual / Hold / Stab)",
+    "MODE_MANUAL": "Set Flight Mode: MANUAL",
+    "MODE_ALT_HOLD": "Set Flight Mode: ALT_HOLD (Depth Hold)",
+    "MODE_STABILIZE": "Set Flight Mode: STABILIZE",
+    "CAMERA_TILT_UP": "Camera Tilt Up (+5°)",
+    "CAMERA_TILT_DOWN": "Camera Tilt Down (-5°)",
+    "CAMERA_TILT_CENTER": "Camera Tilt Center (0°)",
+    "LIGHTS_CYCLE": "Cycle Lumen Lights (0/25/50/100%)",
+    "LIGHTS_OFF": "Lumen Lights Off (0%)",
+    "GAIN_INCREASE": "Increase Gain Preset (+25%)",
+    "GAIN_DECREASE": "Decrease Gain Preset (-25%)",
+    "NONE": "Unmapped / No Action",
+}
+
+DEFAULT_BUTTON_MAPPINGS: Dict[str, str] = {
+    "btn_start": "TOGGLE_ARM",
+    "btn_back": "CYCLE_MODE",
+    "btn_a": "DISARM",
+    "btn_b": "NONE",
+    "btn_x": "CAMERA_TILT_DOWN",
+    "btn_y": "CAMERA_TILT_UP",
+    "btn_lb": "LIGHTS_OFF",
+    "btn_rb": "LIGHTS_CYCLE",
+    "btn_l3": "NONE",
+    "btn_r3": "CAMERA_TILT_CENTER",
+    "dpad_up": "GAIN_INCREASE",
+    "dpad_down": "GAIN_DECREASE",
+    "dpad_left": "MODE_MANUAL",
+    "dpad_right": "MODE_ALT_HOLD",
+}
+
 
 class GamepadState:
-    """Thread-safe snapshot of gamepad axes, triggers, and buttons."""
+    """Thread-safe snapshot of gamepad axes, triggers, calibration, and button mappings."""
 
     def __init__(self):
         self.lock = threading.RLock()
@@ -74,7 +113,13 @@ class GamepadState:
         self.backend: str = "None"
         self.last_update_time: float = 0.0
 
-        # Normalized Axes (-1000 to +1000)
+        # Raw Axes before calibration (-32768..32767)
+        self.raw_lx: int = 0
+        self.raw_ly: int = 0
+        self.raw_rx: int = 0
+        self.raw_ry: int = 0
+
+        # Calibrated Normalized Axes (-1000 to +1000)
         self.axis_lx: int = 0      # Left Stick X (Yaw / Turn)
         self.axis_ly: int = 0      # Left Stick Y (Throttle / Depth)
         self.axis_rx: int = 0      # Right Stick X (Lateral Strafe)
@@ -106,6 +151,24 @@ class GamepadState:
         # Gain multiplier (0.25, 0.50, 0.75, 1.0)
         self.gain: float = 0.50
 
+        # Calibration parameters
+        self.deadzone_pct: float = 0.10
+        self.expo: float = 0.0
+        self.invert_lx: bool = False
+        self.invert_ly: bool = False
+        self.invert_rx: bool = False
+        self.invert_ry: bool = False
+
+        # Zero-tare center offsets
+        self.center_offset_lx: int = 0
+        self.center_offset_ly: int = 0
+        self.center_offset_rx: int = 0
+        self.center_offset_ry: int = 0
+
+        # Button action mappings
+        self.button_mappings: Dict[str, str] = dict(DEFAULT_BUTTON_MAPPINGS)
+        self.last_pressed_button: Optional[str] = None
+
     def get_snapshot(self) -> Dict[str, Any]:
         with self.lock:
             return {
@@ -113,6 +176,10 @@ class GamepadState:
                 "controller_name": self.controller_name,
                 "backend": self.backend,
                 "last_update_time": self.last_update_time,
+                "raw_lx": self.raw_lx,
+                "raw_ly": self.raw_ly,
+                "raw_rx": self.raw_rx,
+                "raw_ry": self.raw_ry,
                 "axis_lx": self.axis_lx,
                 "axis_ly": self.axis_ly,
                 "axis_rx": self.axis_rx,
@@ -135,6 +202,18 @@ class GamepadState:
                 "dpad_right": self.dpad_right,
                 "buttons_bitmask": self.buttons_bitmask,
                 "gain": self.gain,
+                "deadzone_pct": self.deadzone_pct,
+                "expo": self.expo,
+                "invert_lx": self.invert_lx,
+                "invert_ly": self.invert_ly,
+                "invert_rx": self.invert_rx,
+                "invert_ry": self.invert_ry,
+                "center_offset_lx": self.center_offset_lx,
+                "center_offset_ly": self.center_offset_ly,
+                "center_offset_rx": self.center_offset_rx,
+                "center_offset_ry": self.center_offset_ry,
+                "button_mappings": dict(self.button_mappings),
+                "last_pressed_button": self.last_pressed_button,
             }
 
 
@@ -143,6 +222,7 @@ class GamepadManager:
     Multithreaded controller engine supporting:
     1. XInput (Xbox / Cable Mode) slots 0..3
     2. WinMM (Wireless / Bluetooth / DirectInput Gamepads)
+    3. Live Calibration, Zero-Tare Offset, Exponential Smoothing, and Button Remapping
     """
 
     def __init__(self, action_callback: Optional[Callable[[str, Any], None]] = None):
@@ -170,6 +250,10 @@ class GamepadManager:
         # Previous button states for edge detection
         self._prev_buttons: Dict[str, bool] = {}
 
+        # Config file path for persistent settings
+        self._config_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gamepad_config.json")
+        self.load_config()
+
     def start(self):
         """Start polling worker thread."""
         if not self.running:
@@ -188,6 +272,154 @@ class GamepadManager:
         """Set pilot thrust gain multiplier (0.1 to 1.0)."""
         with self.state.lock:
             self.state.gain = max(0.1, min(1.0, gain))
+
+    def set_deadzone(self, pct: float):
+        """Set joystick deadzone fraction (0.00 to 0.40)."""
+        with self.state.lock:
+            self.state.deadzone_pct = max(0.0, min(0.40, pct))
+        self.save_config()
+
+    def set_expo(self, expo: float):
+        """Set exponential response curve factor (0.0 to 0.80)."""
+        with self.state.lock:
+            self.state.expo = max(0.0, min(0.80, expo))
+        self.save_config()
+
+    def set_inversion(self, axis: str, inverted: bool):
+        """Invert specified axis ('lx', 'ly', 'rx', 'ry')."""
+        with self.state.lock:
+            if axis == "lx": self.state.invert_lx = inverted
+            elif axis == "ly": self.state.invert_ly = inverted
+            elif axis == "rx": self.state.invert_rx = inverted
+            elif axis == "ry": self.state.invert_ry = inverted
+        self.save_config()
+
+    def calibrate_centers(self):
+        """Zero-tare current stick positions as center offsets to eliminate stick drift."""
+        with self.state.lock:
+            self.state.center_offset_lx = self.state.raw_lx
+            self.state.center_offset_ly = self.state.raw_ly
+            self.state.center_offset_rx = self.state.raw_rx
+            self.state.center_offset_ry = self.state.raw_ry
+        self.save_config()
+
+    def reset_calibration(self):
+        """Reset zero offsets, deadzone, expo, and inversions to defaults."""
+        with self.state.lock:
+            self.state.center_offset_lx = 0
+            self.state.center_offset_ly = 0
+            self.state.center_offset_rx = 0
+            self.state.center_offset_ry = 0
+            self.state.deadzone_pct = 0.10
+            self.state.expo = 0.0
+            self.state.invert_lx = False
+            self.state.invert_ly = False
+            self.state.invert_rx = False
+            self.state.invert_ry = False
+        self.save_config()
+
+    def set_button_mapping(self, btn_name: str, action_id: str):
+        """Assign an action to a button."""
+        with self.state.lock:
+            self.state.button_mappings[btn_name] = action_id
+        self.save_config()
+
+    def reset_mappings_to_default(self):
+        """Reset all button mappings to standard ArduSub assignments."""
+        with self.state.lock:
+            self.state.button_mappings = dict(DEFAULT_BUTTON_MAPPINGS)
+        self.save_config()
+
+    def save_config(self):
+        """Persist calibration & button mappings to JSON file."""
+        try:
+            with self.state.lock:
+                data = {
+                    "deadzone_pct": self.state.deadzone_pct,
+                    "expo": self.state.expo,
+                    "invert_lx": self.state.invert_lx,
+                    "invert_ly": self.state.invert_ly,
+                    "invert_rx": self.state.invert_rx,
+                    "invert_ry": self.state.invert_ry,
+                    "center_offset_lx": self.state.center_offset_lx,
+                    "center_offset_ly": self.state.center_offset_ly,
+                    "center_offset_rx": self.state.center_offset_rx,
+                    "center_offset_ry": self.state.center_offset_ry,
+                    "button_mappings": self.state.button_mappings,
+                }
+            with open(self._config_file, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception:
+            pass
+
+    def load_config(self):
+        """Load calibration & button mappings from JSON file if available."""
+        if not os.path.exists(self._config_file):
+            return
+        try:
+            with open(self._config_file, "r") as f:
+                data = json.load(f)
+            with self.state.lock:
+                self.state.deadzone_pct = float(data.get("deadzone_pct", 0.10))
+                self.state.expo = float(data.get("expo", 0.0))
+                self.state.invert_lx = bool(data.get("invert_lx", False))
+                self.state.invert_ly = bool(data.get("invert_ly", False))
+                self.state.invert_rx = bool(data.get("invert_rx", False))
+                self.state.invert_ry = bool(data.get("invert_ry", False))
+                self.state.center_offset_lx = int(data.get("center_offset_lx", 0))
+                self.state.center_offset_ly = int(data.get("center_offset_ly", 0))
+                self.state.center_offset_rx = int(data.get("center_offset_rx", 0))
+                self.state.center_offset_ry = int(data.get("center_offset_ry", 0))
+                loaded_map = data.get("button_mappings", {})
+                for k, v in loaded_map.items():
+                    if k in self.state.button_mappings:
+                        self.state.button_mappings[k] = v
+        except Exception:
+            pass
+
+    def _normalize_stick_calibrated(
+        self,
+        raw_val: int,
+        center_offset: int,
+        invert: bool,
+        deadzone_pct: float,
+        expo: float
+    ) -> int:
+        """
+        Normalize 16-bit signed joystick value with center zero-tare drift offset,
+        deadzone scaling, progressive expo curve, and polarity inversion.
+        Returns scaled value in [-1000, 1000].
+        """
+        # Subtract zero-tare center offset
+        val = raw_val - center_offset
+        val = max(-32768, min(32767, val))
+
+        # Deadzone threshold
+        dz = int(deadzone_pct * 32767)
+        if abs(val) < dz:
+            return 0
+
+        # Scale past deadzone
+        sign = 1 if val > 0 else -1
+        mag = abs(val) - dz
+        max_mag = 32767 - dz
+        norm_float = mag / max_mag  # 0.0 to 1.0
+
+        # Apply Expo curve: (1 - expo) * x + expo * (x^3)
+        if expo > 0:
+            norm_float = (1.0 - expo) * norm_float + expo * (norm_float ** 3)
+
+        scaled = int(norm_float * 1000) * sign
+        scaled = max(-1000, min(1000, scaled))
+
+        if invert:
+            scaled = -scaled
+
+        return scaled
+
+    def _normalize_winmm_raw(self, raw_unsigned: int) -> int:
+        """Convert WinMM 16-bit unsigned (0..65535, center 32767) to signed [-32768, 32767]."""
+        return max(-32768, min(32767, raw_unsigned - 32767))
 
     def _polling_loop(self):
         """50Hz polling loop checking XInput (0..3) first, then falling back to WinMM."""
@@ -229,36 +461,30 @@ class GamepadManager:
 
             time.sleep(0.02)  # 50 Hz
 
-    def _normalize_stick(self, val: int, deadzone: int = 7849) -> int:
-        """Scale 16-bit signed stick value to [-1000, 1000]."""
-        if abs(val) < deadzone:
-            return 0
-        sign = 1 if val > 0 else -1
-        mag = abs(val) - deadzone
-        max_mag = 32767 - deadzone
-        scaled = int((mag / max_mag) * 1000) * sign
-        return max(-1000, min(1000, scaled))
-
-    def _normalize_winmm_axis(self, raw_val: int, deadzone: int = 3500) -> int:
-        """
-        Normalize WinMM 16-bit unsigned axis (0..65535, center 32767)
-        to signed [-1000, 1000] with deadzone around 32767.
-        """
-        diff = raw_val - 32767
-        if abs(diff) < deadzone:
-            return 0
-        sign = 1 if diff > 0 else -1
-        mag = abs(diff) - deadzone
-        max_mag = 32767 - deadzone
-        scaled = int((mag / max_mag) * 1000) * sign
-        return max(-1000, min(1000, scaled))
-
     def _parse_xinput(self, pad: XINPUT_GAMEPAD, slot: int):
-        """Process XInput gamepad data."""
-        lx = self._normalize_stick(pad.sThumbLX, 7849)
-        ly = self._normalize_stick(pad.sThumbLY, 7849)
-        rx = self._normalize_stick(pad.sThumbRX, 8689)
-        ry = self._normalize_stick(pad.sThumbRY, 8689)
+        """Process XInput gamepad data with calibration."""
+        raw_lx = pad.sThumbLX
+        raw_ly = pad.sThumbLY
+        raw_rx = pad.sThumbRX
+        raw_ry = pad.sThumbRY
+
+        # Read current calibration settings
+        with self.state.lock:
+            dz = self.state.deadzone_pct
+            expo = self.state.expo
+            inv_lx = self.state.invert_lx
+            inv_ly = self.state.invert_ly
+            inv_rx = self.state.invert_rx
+            inv_ry = self.state.invert_ry
+            off_lx = self.state.center_offset_lx
+            off_ly = self.state.center_offset_ly
+            off_rx = self.state.center_offset_rx
+            off_ry = self.state.center_offset_ry
+
+        lx = self._normalize_stick_calibrated(raw_lx, off_lx, inv_lx, dz, expo)
+        ly = self._normalize_stick_calibrated(raw_ly, off_ly, inv_ly, dz, expo)
+        rx = self._normalize_stick_calibrated(raw_rx, off_rx, inv_rx, dz, expo)
+        ry = self._normalize_stick_calibrated(raw_ry, off_ry, inv_ry, dz, expo)
 
         lt = int((max(0, pad.bLeftTrigger - 30) / (255 - 30)) * 1000) if pad.bLeftTrigger > 30 else 0
         rt = int((max(0, pad.bRightTrigger - 30) / (255 - 30)) * 1000) if pad.bRightTrigger > 30 else 0
@@ -288,6 +514,10 @@ class GamepadManager:
             self.state.controller_name = f"Xbox Controller (Slot {slot})"
             self.state.backend = "XInput (Cable/USB)"
             self.state.last_update_time = time.time()
+            self.state.raw_lx = raw_lx
+            self.state.raw_ly = raw_ly
+            self.state.raw_rx = raw_rx
+            self.state.raw_ry = raw_ry
             self.state.axis_lx = lx
             self.state.axis_ly = ly
             self.state.axis_rx = rx
@@ -299,19 +529,28 @@ class GamepadManager:
             self.state.buttons_bitmask = b
 
     def _parse_winmm(self, info: JOYINFOEX, jid: int):
-        """Process WinMM wireless / Bluetooth / DirectInput joystick data."""
-        # Standard WinMM axis mapping for wireless gamepads:
-        # X: Left Stick X
-        # Y: Left Stick Y (Inverted: 0 is up, 65535 is down)
-        # Z: Right Stick X (or LT/RT triggers on some gamepads)
-        # R: Right Stick Y (Inverted: 0 is up, 65535 is down)
-        # U, V: Additional axes
-        lx = self._normalize_winmm_axis(info.dwXpos)
-        ly = -self._normalize_winmm_axis(info.dwYpos)  # Invert Y so up is positive
+        """Process WinMM wireless / Bluetooth / DirectInput joystick data with calibration."""
+        raw_lx = self._normalize_winmm_raw(info.dwXpos)
+        raw_ly = -self._normalize_winmm_raw(info.dwYpos)  # Invert so UP is positive
+        raw_rx = self._normalize_winmm_raw(info.dwZpos)
+        raw_ry = -self._normalize_winmm_raw(info.dwRpos)
 
-        # Handle Right Stick
-        rx = self._normalize_winmm_axis(info.dwZpos)
-        ry = -self._normalize_winmm_axis(info.dwRpos)
+        with self.state.lock:
+            dz = self.state.deadzone_pct
+            expo = self.state.expo
+            inv_lx = self.state.invert_lx
+            inv_ly = self.state.invert_ly
+            inv_rx = self.state.invert_rx
+            inv_ry = self.state.invert_ry
+            off_lx = self.state.center_offset_lx
+            off_ly = self.state.center_offset_ly
+            off_rx = self.state.center_offset_rx
+            off_ry = self.state.center_offset_ry
+
+        lx = self._normalize_stick_calibrated(raw_lx, off_lx, inv_lx, dz, expo)
+        ly = self._normalize_stick_calibrated(raw_ly, off_ly, inv_ly, dz, expo)
+        rx = self._normalize_stick_calibrated(raw_rx, off_rx, inv_rx, dz, expo)
+        ry = self._normalize_stick_calibrated(raw_ry, off_ry, inv_ry, dz, expo)
 
         # Triggers
         lt = 0
@@ -321,7 +560,7 @@ class GamepadManager:
         if info.dwVpos > 0:
             rt = int((info.dwVpos / 65535.0) * 1000)
 
-        # POV Hat / D-Pad (0 = North, 9000 = East, 18000 = South, 27000 = West, 65535 = Center)
+        # POV Hat / D-Pad
         pov = info.dwPOV
         dp_up = (pov == 0 or pov == 31500 or pov == 4500)
         dp_right = (pov == 9000 or pov == 4500 or pov == 13500)
@@ -354,6 +593,10 @@ class GamepadManager:
             self.state.controller_name = f"Wireless Controller #{jid}"
             self.state.backend = "WinMM (Wireless/BT)"
             self.state.last_update_time = time.time()
+            self.state.raw_lx = raw_lx
+            self.state.raw_ly = raw_ly
+            self.state.raw_rx = raw_rx
+            self.state.raw_ry = raw_ry
             self.state.axis_lx = lx
             self.state.axis_ly = ly
             self.state.axis_rx = rx
@@ -368,6 +611,8 @@ class GamepadManager:
         for name, current in btn_states.items():
             prev = self._prev_buttons.get(name, False)
             if current and not prev:
+                with self.state.lock:
+                    self.state.last_pressed_button = name
                 self._handle_button_press(name)
         self._prev_buttons = btn_states
 
@@ -375,26 +620,20 @@ class GamepadManager:
         if not self.action_callback:
             return
 
-        actions = {
-            "btn_start": ("TOGGLE_ARM", None),
-            "btn_back": ("CYCLE_MODE", None),
-            "btn_a": ("DISARM", None),
-            "btn_y": ("CAMERA_TILT_UP", None),
-            "btn_x": ("CAMERA_TILT_DOWN", None),
-            "btn_rb": ("LIGHTS_CYCLE", None),
-            "btn_lb": ("LIGHTS_OFF", None),
-            "dpad_up": ("GAIN_INCREASE", None),
-            "dpad_down": ("GAIN_DECREASE", None),
-        }
+        with self.state.lock:
+            action_id = self.state.button_mappings.get(btn_name, "NONE")
 
-        if btn_name in actions:
-            action, arg = actions[btn_name]
+        if action_id and action_id != "NONE":
             try:
-                self.action_callback(action, arg)
+                self.action_callback(action_id, None)
             except Exception:
                 pass
 
     def _reset_inputs(self):
+        self.state.raw_lx = 0
+        self.state.raw_ly = 0
+        self.state.raw_rx = 0
+        self.state.raw_ry = 0
         self.state.axis_lx = 0
         self.state.axis_ly = 0
         self.state.axis_rx = 0

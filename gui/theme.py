@@ -27,6 +27,7 @@ FONT_HEADER = ("Consolas", 11, "bold")
 FONT_BODY = ("Consolas", 10, "normal")
 FONT_BODY_BOLD = ("Consolas", 10, "bold")
 FONT_SMALL = ("Consolas", 9, "normal")
+FONT_MONO = ("Consolas", 9, "normal")
 FONT_LARGE_NUM = ("Consolas", 20, "bold")
 FONT_HUGE_NUM = ("Consolas", 28, "bold")
 
