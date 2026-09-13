@@ -125,7 +125,7 @@ class PixDoctorApp(tk.Tk):
         self.pill_pixhawk = RetroPill(badge_frame, text="PIXHAWK: AUTO-SCAN", active=False)
         self.pill_pixhawk.pack(side=tk.LEFT, padx=3)
 
-        self.pill_nano = RetroPill(badge_frame, text="NANO PROBE: SCAN", active=False)
+        self.pill_nano = RetroPill(badge_frame, text="PROBE: SCAN", active=False)
         self.pill_nano.pack(side=tk.LEFT, padx=3)
 
         self.pill_gamepad = RetroPill(badge_frame, text="GAMEPAD: STANDBY", active=False)
@@ -293,12 +293,14 @@ class PixDoctorApp(tk.Tk):
             else:
                 self.pill_pixhawk.set_state(active=False, text="PIXHAWK: AUTO-SCAN")
 
-            # Nano Probe Badge
+            # Hardware Probe (ESP32 / Nano) Badge
             if nano_snap["connected"]:
-                n_text = f"NANO: {nano_snap['port']} ({nano_snap['packet_rate_hz']:.0f}Hz)"
+                dev = nano_snap.get("device_info", "")
+                tag = "ESP32" if "ESP32" in dev.upper() else ("NANO" if "NANO" in dev.upper() else "PROBE")
+                n_text = f"{tag}: {nano_snap['port']} ({nano_snap['packet_rate_hz']:.0f}Hz)"
                 self.pill_nano.set_state(active=True, text=n_text)
             else:
-                self.pill_nano.set_state(active=False, text="NANO: SCAN")
+                self.pill_nano.set_state(active=False, text="PROBE: SCAN")
 
             # Gamepad Badge
             if pad_snap["connected"]:
@@ -427,22 +429,23 @@ class PixDoctorApp(tk.Tk):
         cb_baud.pack(side=tk.LEFT)
         tk.Label(b_row, text="(115200 USB / 57600 TELEM)", bg=COLOR_SURFACE, fg=COLOR_TEXT_DIM, font=FONT_SMALL).pack(side=tk.LEFT, padx=6)
 
-        # Nano Port Row
+        # Hardware Probe (ESP32 / Nano) Port Row
         n_row = tk.Frame(card.body, bg=COLOR_SURFACE)
         n_row.pack(fill=tk.X, pady=4)
-        tk.Label(n_row, text="NANO PROBE PORT:", bg=COLOR_SURFACE, fg=COLOR_TEXT_WHITE, font=FONT_SMALL, width=18, anchor="w").pack(side=tk.LEFT)
+        tk.Label(n_row, text="PROBE PORT (ESP32/NANO):", bg=COLOR_SURFACE, fg=COLOR_TEXT_WHITE, font=FONT_SMALL, width=22, anchor="w").pack(side=tk.LEFT)
         nano_var = tk.StringVar(value=ports[0])
-        cb_nano = ttk.Combobox(n_row, textvariable=nano_var, values=ports, width=32)
+        cb_nano = ttk.Combobox(n_row, textvariable=nano_var, values=ports, width=30)
         cb_nano.pack(side=tk.LEFT)
 
         # Connection Status
         status_box = tk.Frame(card.body, bg=COLOR_SURFACE, pady=6)
         status_box.pack(fill=tk.X, pady=(8, 0))
 
+        probe_status = f"ONLINE ({self.nano_mgr.state.device_info})" if self.nano_mgr.state.connected else "OFFLINE"
         lbl_cur_status = tk.Label(
             status_box,
             text=f"STATUS: Pixhawk {'ONLINE' if self.mav_mgr.is_connected() else 'OFFLINE'} | "
-                 f"Nano {'ONLINE' if self.nano_mgr.state.connected else 'OFFLINE'}",
+                 f"Probe {probe_status}",
             bg=COLOR_SURFACE,
             fg=COLOR_TEXT_WHITE,
             font=FONT_BODY_BOLD

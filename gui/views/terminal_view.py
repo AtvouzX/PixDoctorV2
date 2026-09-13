@@ -97,16 +97,17 @@ class TerminalView(tk.Frame):
         cmd_row = tk.Frame(self, bg=COLOR_SURFACE, padx=10, pady=6, highlightbackground=COLOR_BORDER, highlightthickness=1)
         cmd_row.pack(fill=tk.X, padx=12, pady=(0, 10))
 
-        tk.Label(cmd_row, text="NANO PROBE COMMAND:", bg=COLOR_SURFACE, fg=COLOR_TEXT_DIM, font=FONT_SMALL).pack(side=tk.LEFT, padx=(0, 6))
+        tk.Label(cmd_row, text="PROBE COMMAND (ESP32 / NANO):", bg=COLOR_SURFACE, fg=COLOR_TEXT_DIM, font=FONT_SMALL).pack(side=tk.LEFT, padx=(0, 6))
         self.cmd_var = tk.StringVar()
-        self.ent_cmd = ttk.Entry(cmd_row, textvariable=self.cmd_var, width=30)
-        self.ent_cmd.pack(side=tk.LEFT, padx=(0, 6))
+        self.ent_cmd = ttk.Entry(cmd_row, textvariable=self.cmd_var, width=28)
         self.ent_cmd.bind("<Return>", lambda e: self._send_probe_cmd())
+        self.ent_cmd.pack(side=tk.LEFT, padx=(0, 6))
 
-        ttk.Button(cmd_row, text="[ SEND ]", style="Retro.TButton", command=self._send_probe_cmd).pack(side=tk.LEFT, padx=(0, 12))
+        ttk.Button(cmd_row, text="[ SEND ]", style="Retro.TButton", command=self._send_probe_cmd).pack(side=tk.LEFT, padx=(0, 10))
 
         # Quick Preset Buttons
         ttk.Button(cmd_row, text="PING", style="Retro.TButton", command=lambda: self.nano_mgr.send_command("PING")).pack(side=tk.LEFT, padx=2)
+        ttk.Button(cmd_row, text="STATUS", style="Retro.TButton", command=lambda: self.nano_mgr.send_command("STATUS")).pack(side=tk.LEFT, padx=2)
         ttk.Button(cmd_row, text="RATE 20", style="Retro.TButton", command=lambda: self.nano_mgr.send_command("RATE 20")).pack(side=tk.LEFT, padx=2)
         ttk.Button(cmd_row, text="RESET", style="Retro.TButton", command=lambda: self.nano_mgr.send_command("RESET")).pack(side=tk.LEFT, padx=2)
 
@@ -114,7 +115,7 @@ class TerminalView(tk.Frame):
         cmd = self.cmd_var.get().strip()
         if cmd:
             self.nano_mgr.send_command(cmd)
-            self.append_log(f"[SEND -> NANO] {cmd}", "INFO")
+            self.append_log(f"[SEND -> PROBE] {cmd}", "INFO")
             self.cmd_var.set("")
 
     def append_log(self, text: str, level: str = "INFO"):

@@ -30,7 +30,7 @@ from gui.theme import (
 )
 from gui.widgets.mono_widgets import RetroCard, PwmBar
 from gui.widgets.thruster_diagram import ThrusterDiagram
-from core.ardusub_defs import FRAMES, DEFAULT_FRAME_ID
+from core.ardusub_defs import FRAMES, DEFAULT_FRAME_ID, NANO_PROBE_PINS, ESP32_PROBE_PINS
 from core.mavlink_manager import MavlinkManager
 from core.nano_probe_manager import NanoProbeManager
 from core.param_manager import ParameterManager
@@ -265,8 +265,8 @@ class ThrusterView(tk.Frame):
         self.sliders_container.pack(fill=tk.X)
         self._rebuild_individual_sliders()
 
-        # 3. Nano 33 IoT Closed-Loop Output Gauges (Zero Jitter)
-        bars_card = RetroCard(right_col, title="PixDoctorNano Hardware Output Verification")
+        # 3. Hardware Closed-Loop Output Gauges (ESP32 / Nano)
+        bars_card = RetroCard(right_col, title="Physical Output Verification (ESP32 / Nano Probe)")
         bars_card.pack(fill=tk.BOTH, expand=True)
 
         self.bars_container = tk.Frame(bars_card.body, bg=COLOR_SURFACE)
@@ -505,9 +505,21 @@ class ThrusterView(tk.Frame):
         thrusters = frame_data.get("thrusters", [])
         t_count = len(thrusters) if thrusters else frame_data["thruster_count"]
 
+        # Fast pin mapping lookups
+        nano_map = {item["ch"]: item["pin"] for item in NANO_PROBE_PINS}
+        esp32_map = {item["ch"]: item["pin"] for item in ESP32_PROBE_PINS}
+        dev_upper = (self.nano_mgr.state.device_info or "").upper()
+
         for i in range(1, t_count + 1):
             t_name = thrusters[i - 1]["name"] if i <= len(thrusters) else f"Thruster {i}"
-            bar = PwmBar(self.bars_container, channel_name=f"M{i} - {t_name}")
+            if "ESP32" in dev_upper:
+                pin_badge = f"[{esp32_map.get(i, '')}]"
+            elif "NANO" in dev_upper or "SAMD21" in dev_upper:
+                pin_badge = f"[{nano_map.get(i, '')}]"
+            else:
+                pin_badge = f"[{esp32_map.get(i, '')} / {nano_map.get(i, '')}]"
+
+            bar = PwmBar(self.bars_container, channel_name=f"M{i} - {t_name} {pin_badge}")
             bar.pack(fill=tk.X, pady=2)
             self.pwm_bars.append(bar)
 

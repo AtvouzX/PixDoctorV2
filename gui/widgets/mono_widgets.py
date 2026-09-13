@@ -180,7 +180,7 @@ class PwmBar(tk.Frame):
 
         self.lbl_stats = tk.Label(
             top_frame,
-            text="CMD:1500µs | NANO:  --µs | Δ:  --µs |  --.-Hz",
+            text="CMD:1500µs | PROBE:  --µs | Δ:  --µs |  --.-Hz",
             bg=COLOR_SURFACE,
             fg=COLOR_TEXT_DIM,
             font=FONT_SMALL,
@@ -210,9 +210,9 @@ class PwmBar(tk.Frame):
         # Format stats text with fixed column widths to eliminate visual text jitter
         if valid and meas_pwm > 0:
             delta = meas_pwm - cmd_pwm
-            stats_str = f"CMD:{cmd_pwm:4d}µs | NANO:{meas_pwm:4d}µs | Δ:{delta:+4d}µs | {meas_hz:4.1f}Hz"
+            stats_str = f"CMD:{cmd_pwm:4d}µs | PROBE:{meas_pwm:4d}µs | Δ:{delta:+4d}µs | {meas_hz:4.1f}Hz"
         else:
-            stats_str = f"CMD:{cmd_pwm:4d}µs | NANO:  --µs | Δ:  --µs |  --.-Hz"
+            stats_str = f"CMD:{cmd_pwm:4d}µs | PROBE:  --µs | Δ:  --µs |  --.-Hz"
         self.lbl_stats.config(text=stats_str)
         self.redraw()
 
