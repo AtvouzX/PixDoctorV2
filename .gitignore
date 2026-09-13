@@ -52,3 +52,10 @@ test_params.param
 .coverage
 htmlcov/
 .pytest_cache/
+
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.clang_complete
+.gcc-flags.json
