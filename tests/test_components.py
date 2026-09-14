@@ -655,6 +655,43 @@ class TestPixDoctorV2Core(unittest.TestCase):
         root.destroy()
         mm.load_from_file()
 
+    def test_gamepad_disconnect_and_reset(self):
+        """Verify gamepad disconnect handling, full input clearing, and edge state purge."""
+        gm = GamepadManager()
+
+        # Simulate active state with inputs
+        with gm.state.lock:
+            gm.state.connected = True
+            gm.state.controller_name = "Wireless Controller #0 [PLAYSTATION]"
+            gm.state.backend = "WinMM (Wireless/BT)"
+            gm.state.axis_lx = 500
+            gm.state.axis_ly = -300
+            gm.state.btn_a = True
+            gm.state.btn_start = True
+            gm.state.dpad_up = True
+            gm.state.buttons_bitmask = 0b10000001
+            gm.state.last_pressed_button = "btn_start"
+            gm.state.last_pressed_raw_btn = 10
+        gm._prev_buttons = {"btn_start": True, "btn_a": True}
+
+        # Trigger disconnect
+        gm._mark_disconnected()
+
+        # Verify state is cleared cleanly
+        snap = gm.state.get_snapshot()
+        self.assertFalse(snap["connected"])
+        self.assertEqual(snap["controller_name"], "Disconnected")
+        self.assertEqual(snap["backend"], "None")
+        self.assertEqual(snap["axis_lx"], 0)
+        self.assertEqual(snap["axis_ly"], 0)
+        self.assertFalse(snap["btn_a"])
+        self.assertFalse(snap["btn_start"])
+        self.assertFalse(snap["dpad_up"])
+        self.assertEqual(snap["buttons_bitmask"], 0)
+        self.assertIsNone(snap["last_pressed_button"])
+        self.assertEqual(snap["last_pressed_raw_btn"], 0)
+        self.assertEqual(len(gm._prev_buttons), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

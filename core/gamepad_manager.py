@@ -252,6 +252,8 @@ class GamepadManager:
         for dll_name in ("xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll"):
             try:
                 self._xinput = ctypes.windll.LoadLibrary(dll_name)
+                self._xinput.XInputGetState.argtypes = [ctypes.c_ulong, ctypes.POINTER(XINPUT_STATE)]
+                self._xinput.XInputGetState.restype = ctypes.c_ulong
                 break
             except Exception:
                 continue
@@ -260,6 +262,10 @@ class GamepadManager:
         self._winmm = None
         try:
             self._winmm = ctypes.windll.winmm
+            self._winmm.joyGetPosEx.argtypes = [ctypes.c_uint, ctypes.POINTER(JOYINFOEX)]
+            self._winmm.joyGetPosEx.restype = ctypes.c_uint
+            self._winmm.joyGetNumDevs.argtypes = []
+            self._winmm.joyGetNumDevs.restype = ctypes.c_uint
         except Exception:
             pass
 
@@ -589,43 +595,118 @@ class GamepadManager:
         """Convert WinMM 16-bit unsigned (0..65535, center 32767) to signed [-32768, 32767]."""
         return max(-32768, min(32767, raw_unsigned - 32767))
 
+    def _mark_disconnected(self):
+        with self.state.lock:
+            if self.state.connected:
+                self.state.connected = False
+                self.state.controller_name = "Disconnected"
+                self.state.backend = "None"
+                self._reset_inputs()
+
     def _polling_loop(self):
-        """50Hz polling loop checking XInput (0..3) first, then falling back to WinMM."""
+        """50Hz polling loop with active-device caching, safe dwSize initialization, and cooldown scan protection."""
         xinput_state = XINPUT_STATE()
         winmm_info = JOYINFOEX()
-        winmm_info.dwSize = ctypes.sizeof(JOYINFOEX)
-        winmm_info.dwFlags = JOY_RETURNALL
+
+        active_backend: Optional[str] = None  # 'xinput' or 'winmm'
+        active_slot: Optional[int] = None
+        last_scan_time: float = 0.0
 
         while self.running:
-            handled = False
+            try:
+                now = time.time()
 
-            # 1. Try XInput on all 4 slots (0, 1, 2, 3)
-            if self._xinput:
-                for slot in range(4):
-                    res = self._xinput.XInputGetState(slot, ctypes.byref(xinput_state))
-                    if res == 0:  # ERROR_SUCCESS
-                        self._parse_xinput(xinput_state.Gamepad, slot)
-                        handled = True
-                        break
+                if active_backend == "xinput" and active_slot is not None and self._xinput:
+                    try:
+                        res = self._xinput.XInputGetState(active_slot, ctypes.byref(xinput_state))
+                    except (Exception, OSError):
+                        res = -1
 
-            # 2. If no XInput device found, try WinMM (Wireless / Bluetooth / DirectInput)
-            if not handled and self._winmm:
-                num_devs = min(self._winmm.joyGetNumDevs(), 16)
-                for jid in range(num_devs):
-                    res = self._winmm.joyGetPosEx(jid, ctypes.byref(winmm_info))
-                    if res == 0:  # JOYERR_NOERROR
-                        self._parse_winmm(winmm_info, jid)
-                        handled = True
-                        break
+                    if res == 0:
+                        try:
+                            self._parse_xinput(xinput_state.Gamepad, active_slot)
+                        except Exception:
+                            pass
+                    else:
+                        # Controller disconnected
+                        active_backend = None
+                        active_slot = None
+                        last_scan_time = now + 0.5  # 500ms teardown cooldown
+                        self._mark_disconnected()
 
-            # 3. If neither found, mark disconnected
-            if not handled:
-                with self.state.lock:
-                    if self.state.connected:
-                        self.state.connected = False
-                        self.state.controller_name = "Disconnected"
-                        self.state.backend = "None"
-                        self._reset_inputs()
+                elif active_backend == "winmm" and active_slot is not None and self._winmm:
+                    winmm_info.dwSize = ctypes.sizeof(JOYINFOEX)
+                    winmm_info.dwFlags = JOY_RETURNALL
+                    try:
+                        res = self._winmm.joyGetPosEx(active_slot, ctypes.byref(winmm_info))
+                    except (Exception, OSError):
+                        res = -1
+
+                    if res == 0:
+                        try:
+                            self._parse_winmm(winmm_info, active_slot)
+                        except Exception:
+                            pass
+                    else:
+                        # Controller disconnected / turned off
+                        active_backend = None
+                        active_slot = None
+                        last_scan_time = now + 0.5  # 500ms teardown cooldown
+                        self._mark_disconnected()
+
+                else:
+                    # Disconnected: only scan periodically (2Hz / 500ms interval) to prevent teardown hammering
+                    if now - last_scan_time >= 0.5:
+                        last_scan_time = now
+                        found = False
+
+                        # 1. Check XInput slots 0..3
+                        if self._xinput:
+                            for slot in range(4):
+                                try:
+                                    res = self._xinput.XInputGetState(slot, ctypes.byref(xinput_state))
+                                except (Exception, OSError):
+                                    res = -1
+                                if res == 0:
+                                    active_backend = "xinput"
+                                    active_slot = slot
+                                    try:
+                                        self._parse_xinput(xinput_state.Gamepad, slot)
+                                    except Exception:
+                                        pass
+                                    found = True
+                                    break
+
+                        # 2. Check WinMM devices
+                        if not found and self._winmm:
+                            try:
+                                num_devs = min(self._winmm.joyGetNumDevs(), 16)
+                            except (Exception, OSError):
+                                num_devs = 0
+
+                            for jid in range(num_devs):
+                                winmm_info.dwSize = ctypes.sizeof(JOYINFOEX)
+                                winmm_info.dwFlags = JOY_RETURNALL
+                                try:
+                                    res = self._winmm.joyGetPosEx(jid, ctypes.byref(winmm_info))
+                                except (Exception, OSError):
+                                    res = -1
+
+                                if res == 0:
+                                    active_backend = "winmm"
+                                    active_slot = jid
+                                    try:
+                                        self._parse_winmm(winmm_info, jid)
+                                    except Exception:
+                                        pass
+                                    found = True
+                                    break
+
+                        if not found:
+                            self._mark_disconnected()
+
+            except Exception:
+                pass
 
             time.sleep(0.02)  # 50 Hz
 
@@ -948,4 +1029,21 @@ class GamepadManager:
         self.state.axis_ry = 0
         self.state.trigger_lt = 0
         self.state.trigger_rt = 0
+        self.state.btn_a = False
+        self.state.btn_b = False
+        self.state.btn_x = False
+        self.state.btn_y = False
+        self.state.btn_lb = False
+        self.state.btn_rb = False
+        self.state.btn_back = False
+        self.state.btn_start = False
+        self.state.btn_l3 = False
+        self.state.btn_r3 = False
+        self.state.dpad_up = False
+        self.state.dpad_down = False
+        self.state.dpad_left = False
+        self.state.dpad_right = False
         self.state.buttons_bitmask = 0
+        self.state.last_pressed_raw_btn = 0
+        self.state.last_pressed_button = None
+        self._prev_buttons.clear()
