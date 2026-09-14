@@ -4,6 +4,7 @@ Coordinates background MAVLink, Nano Probe, Gamepad, and Auto-Detection threads.
 Renders nostalgic monochrome top status strip and views workspace.
 """
 
+import queue
 import tkinter as tk
 from tkinter import ttk, messagebox
 import serial.tools.list_ports
@@ -56,13 +57,29 @@ class PixDoctorApp(tk.Tk):
         # Apply global nostalgic monochrome styles
         configure_retro_styles(self)
 
-        # 1. Initialize Core Managers
+        # 1. Initialize Thread-Safe Queues & Core Managers
+        self._log_queue = queue.Queue()
+        self._params_dirty = False
         self.param_mgr = ParameterManager()
+
+        # Load Motor Matrix Configuration from motor_matrix_config.json
+        self.matrix_mgr = MotorMatrixManager.get_instance()
+        self.matrix_mgr.load_from_file()
+
+        # Synchronize loaded motor matrix and directions into parameter manager
+        init_frame_id = self.matrix_mgr.get_current_frame_id()
+        self.param_mgr.set_value("FRAME_CONFIG", float(init_frame_id))
+        for m_idx in range(1, 9):
+            d_val = self.matrix_mgr.motor_directions.get(m_idx, 1)
+            self.param_mgr.set_value(f"MOT_{m_idx}_DIRECTION", float(d_val))
+
         self.mav_mgr = MavlinkManager(
             log_callback=self._log_event,
             param_callback=self._on_param_received
         )
         self.nano_mgr = NanoProbeManager(log_callback=self._log_event)
+
+        # Load Gamepad Configuration & Active Profile from gamepad_config.json
         self.gamepad_mgr = GamepadManager(action_callback=self._on_gamepad_action)
         self._cam_tilt_pwm: int = 1500
         self._lights_pwm: int = 1100
@@ -78,7 +95,17 @@ class PixDoctorApp(tk.Tk):
         self._build_top_status_strip()
         self._build_main_body()
 
+        # Ensure initial views are perfectly synchronized with loaded configs
+        if "summary" in self.views and hasattr(self.views["summary"], "hud"):
+            self.views["summary"].hud.set_frame_id(init_frame_id)
+        if "thrusters" in self.views and hasattr(self.views["thrusters"], "diagram"):
+            self.views["thrusters"].diagram.set_frame(init_frame_id)
+
+        self._log_event(f"Loaded gamepad_config.json [Active Profile: {self.gamepad_mgr.get_active_profile_name()}]", "INFO")
+        self._log_event(f"Loaded motor_matrix_config.json [Preset: {self.matrix_mgr.active_preset_name}, Frame: {init_frame_id}]", "INFO")
+
         # 4. Start Background Engines
+        self._running = True
         self.gamepad_mgr.start()
         self.auto_detector.start()
 
@@ -337,17 +364,34 @@ class PixDoctorApp(tk.Tk):
             elif self.active_view_key == "calibration":
                 self.views["calibration"].update_telemetry(mav_snap)
 
-        except Exception as e:
+            # 3. Drain thread-safe background log queue into TerminalView
+            if hasattr(self, "_log_queue") and "terminal" in self.views:
+                for _ in range(30):
+                    try:
+                        q_txt, q_lvl = self._log_queue.get_nowait()
+                        self.views["terminal"].append_log(q_txt, q_lvl)
+                    except queue.Empty:
+                        break
+                    except Exception:
+                        break
+
+            # 4. Debounced parameter table refresh (only once per tick, on main thread!)
+            if getattr(self, "_params_dirty", False) and self.active_view_key == "params":
+                if "params" in self.views:
+                    self.views["params"].refresh_table()
+                self._params_dirty = False
+
+        except Exception:
             pass
 
-        # Schedule next tick in 50ms (20 Hz)
-        self.after(50, self._ui_telemetry_tick)
+        # Schedule next tick in 50ms (20 Hz) only if still running
+        if getattr(self, "_running", False) and self.winfo_exists():
+            self.after(50, self._ui_telemetry_tick)
 
     def _on_param_received(self, name: str, val: float, ptype: int):
-        """MAVLink PARAM_VALUE received."""
+        """MAVLink PARAM_VALUE received (called from reader worker thread)."""
         self.param_mgr.update_param(name, val, ptype)
-        if self.active_view_key == "params":
-            self.views["params"].refresh_table()
+        self._params_dirty = True
 
     def _on_gamepad_action(self, action: str, arg: any):
         """Dispatch gamepad button event to Pixhawk."""
@@ -505,12 +549,18 @@ class PixDoctorApp(tk.Tk):
         ttk.Button(btn_row, text="CLOSE", style="Retro.TButton", command=win.destroy).pack(side=tk.RIGHT)
 
     def _log_event(self, text: str, level: str = "INFO"):
-        """Append event to terminal log view."""
-        if "terminal" in self.views:
-            self.views["terminal"].append_log(text, level)
+        """Thread-safe event logging queue (dispatched to main thread in _ui_telemetry_tick)."""
+        if hasattr(self, "_log_queue"):
+            self._log_queue.put((text, level))
+        elif "terminal" in getattr(self, "views", {}):
+            try:
+                self.views["terminal"].append_log(text, level)
+            except Exception:
+                pass
 
     def _on_closing(self):
         """Clean shutdown of all threads, ensuring configurations are persisted."""
+        self._running = False
         try:
             self.gamepad_mgr.save_config()
             MotorMatrixManager.get_instance().save_to_file()

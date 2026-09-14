@@ -57,7 +57,10 @@ class ThrusterView(tk.Frame):
         self.param_mgr = param_mgr
         self.gamepad_mgr = gamepad_mgr
 
-        self.current_frame_id = DEFAULT_FRAME_ID  # SimpleROV-4
+        self.matrix_mgr = MotorMatrixManager.get_instance()
+        self.current_frame_id = self.matrix_mgr.get_current_frame_id()
+        self.matrix_mgr.register_callback(self._on_matrix_updated)
+
         self.testing_motor: int = 0
         self.pwm_bars: List[PwmBar] = []
 
@@ -70,9 +73,6 @@ class ThrusterView(tk.Frame):
         self.gamepad_thruster_active = tk.BooleanVar(value=False)
         self.gamepad_target_motor = tk.IntVar(value=1)
         self._updating_sliders = False
-
-        self.matrix_mgr = MotorMatrixManager.get_instance()
-        self.matrix_mgr.register_callback(self._on_matrix_updated)
 
         self._build_ui()
 
@@ -101,7 +101,7 @@ class ThrusterView(tk.Frame):
             font=FONT_SMALL
         ).pack(side=tk.LEFT, padx=(0, 4))
 
-        self.frame_var = tk.StringVar(value=FRAMES[DEFAULT_FRAME_ID]["name"])
+        self.frame_var = tk.StringVar(value=FRAMES.get(self.current_frame_id, FRAMES[DEFAULT_FRAME_ID])["name"])
         frame_names = [f["name"] for f in FRAMES.values()]
         self.frame_combo = ttk.Combobox(
             frame_sel_frame,
@@ -127,7 +127,7 @@ class ThrusterView(tk.Frame):
         # Left: Arm FC Button
         self.btn_thruster_arm = ttk.Button(
             control_strip,
-            text="[ ARM FC (BENCH) ]",
+            text="[ ARM FC (BENCH TEST) ]",
             style="Invert.TButton",
             command=self._toggle_arm_bench
         )
@@ -291,6 +291,7 @@ class ThrusterView(tk.Frame):
             if f_data["name"] == sel_name:
                 self.current_frame_id = f_id
                 self.diagram.set_frame(f_id)
+                self.matrix_mgr.set_frame_id(f_id, notify=False)
                 self.param_mgr.set_value("FRAME_CONFIG", float(f_id))
                 self.mav_mgr.set_param("FRAME_CONFIG", float(f_id))
                 self._rebuild_direction_toggles()
@@ -299,7 +300,8 @@ class ThrusterView(tk.Frame):
                 self._rebuild_pwm_bars()
                 # Update gamepad motor choices
                 t_count = f_data.get("thruster_count", 4)
-                self.cb_gamepad_motor["values"] = list(range(1, t_count + 1))
+                if hasattr(self, "cb_gamepad_motor"):
+                    self.cb_gamepad_motor["values"] = list(range(1, t_count + 1))
                 break
 
     def _rebuild_direction_toggles(self):
@@ -326,7 +328,7 @@ class ThrusterView(tk.Frame):
             ).pack(side=tk.LEFT)
 
             param_name = f"MOT_{i}_DIRECTION"
-            cur_val = self.param_mgr.get_value(param_name, 1.0)
+            cur_val = self.param_mgr.get_value(param_name, float(self.matrix_mgr.motor_directions.get(i, 1)))
             is_reversed = (cur_val == -1.0)
 
             btn_text = "[REV]" if is_reversed else "[NORM]"
@@ -352,17 +354,29 @@ class ThrusterView(tk.Frame):
         )
 
     def _on_matrix_updated(self):
-        """Callback when motor matrix or directions change in dialog."""
+        """Callback when motor matrix, frame, or directions change in dialog."""
+        new_fid = self.matrix_mgr.get_current_frame_id()
+        if new_fid != self.current_frame_id:
+            self.current_frame_id = new_fid
+            self.frame_var.set(FRAMES.get(new_fid, FRAMES[DEFAULT_FRAME_ID])["name"])
+            self.diagram.set_frame(new_fid)
+            self._rebuild_individual_sliders()
+            self._rebuild_motor_test_buttons()
+            self._rebuild_pwm_bars()
         self._rebuild_direction_toggles()
+        rev_flags = [self.matrix_mgr.motor_directions.get(i, 1) == -1 for i in range(1, 9)]
+        self.diagram.update_pwms(self.diagram.motor_pwms, reversed_flags=rev_flags)
 
     def _toggle_motor_direction(self, motor_idx: int):
         param_name = f"MOT_{motor_idx}_DIRECTION"
-        cur_val = self.param_mgr.get_value(param_name, 1.0)
+        cur_val = self.param_mgr.get_value(param_name, float(self.matrix_mgr.motor_directions.get(motor_idx, 1)))
         new_val = -1.0 if cur_val == 1.0 else 1.0
         self.param_mgr.set_value(param_name, new_val)
         self.mav_mgr.set_param(param_name, new_val)
         self.matrix_mgr.set_motor_direction(motor_idx, int(new_val), notify=False)
         self._rebuild_direction_toggles()
+        rev_flags = [self.matrix_mgr.motor_directions.get(i, 1) == -1 for i in range(1, 9)]
+        self.diagram.update_pwms(self.diagram.motor_pwms, reversed_flags=rev_flags)
 
     def _rebuild_motor_test_buttons(self):
         """Restored quick test buttons for each motor."""
@@ -559,7 +573,7 @@ class ThrusterView(tk.Frame):
         if not curr_armed:
             if messagebox.askyesno(
                 "Arm FC for Bench Testing",
-                "Ensure thrusters are completely clear of obstacles!\n\nProceed to ARM?",
+                "BENCH TEST ARMING (FORCE ARM):\nBypasses pre-flight sensor checks to enable hardware/motor testing on workbench.\n\nEnsure thrusters are completely clear of obstacles!\n\nProceed to ARM for Bench Testing?",
                 icon="warning"
             ):
                 self.mav_mgr.set_safety_switch(True)
@@ -615,7 +629,7 @@ class ThrusterView(tk.Frame):
         if armed:
             self.btn_thruster_arm.config(text="[ DISARM FC ]", style="Retro.TButton")
         else:
-            self.btn_thruster_arm.config(text="[ ARM FC (BENCH) ]", style="Invert.TButton")
+            self.btn_thruster_arm.config(text="[ ARM FC (BENCH TEST) ]", style="Invert.TButton")
 
         # Update Watchdog / Cooldown Status Label
         if "cooldown" in statustext:
@@ -631,7 +645,7 @@ class ThrusterView(tk.Frame):
             self.lbl_stream_status.config(text="[ BENCH TEST READY (20Hz WATCHDOG) ]", fg=COLOR_TEXT_DIM)
 
         # Handle Gamepad Thruster Driving Mode (Flight Inputs)
-        if self.gamepad_thruster_active.get() and self.gamepad_mgr and self.mav_mgr.is_connected():
+        if self.gamepad_thruster_active.get() and self.gamepad_mgr:
             g_snap = self.gamepad_mgr.state.get_snapshot()
             if g_snap.get("connected", False):
                 cmds = self.matrix_mgr.extract_gamepad_commands(g_snap)
@@ -641,8 +655,18 @@ class ThrusterView(tk.Frame):
                 yaw = cmds["yaw"]
                 buttons = g_snap.get("buttons_bitmask", 0)
 
-                # Send live flight input to Pixhawk!
-                self.mav_mgr.send_manual_control(x=fwd, y=lat, z=throttle, r=yaw, buttons=buttons)
+                # Send live flight input to Pixhawk if connected
+                if self.mav_mgr.is_connected():
+                    self.mav_mgr.send_manual_control(
+                        x=cmds.get("mav_fwd", fwd),
+                        y=cmds.get("mav_lat", lat),
+                        z=cmds.get("mav_depth", throttle),
+                        r=cmds.get("mav_yaw", yaw),
+                        buttons=buttons
+                    )
+                else:
+                    # Offline / bench simulation: compute PWMs directly from matrix!
+                    servos = self.matrix_mgr.compute_motor_pwms(fwd, lat, throttle, yaw, armed=True)
 
                 # Update the individual slider widgets to match live PWM outputs from the flight mixer
                 self._updating_sliders = True
@@ -656,8 +680,9 @@ class ThrusterView(tk.Frame):
                 finally:
                     self._updating_sliders = False
 
-        # Update diagram
-        self.diagram.update_pwms(servos)
+        # Update diagram with authoritative servo outputs and direction reversals
+        rev_flags = [self.matrix_mgr.motor_directions.get(i, 1) == -1 for i in range(1, 9)]
+        self.diagram.update_pwms(servos, reversed_flags=rev_flags)
 
         # Update PWM Bars with jitter-free fixed-width formatting
         for idx, bar in enumerate(self.pwm_bars):

@@ -89,6 +89,15 @@ class FuturisticHud(tk.Canvas):
         self.in_flight: bool = False
         self.matrix_mgr = MotorMatrixManager.get_instance()
 
+        # Telemetry vs Full HUD Graphics Toggle
+        self.show_hud_graphics: bool = True
+
+        # Physical Thruster-Derived Motion Vectors (-1.0 to +1.0)
+        self.thrust_fwd: float = 0.0
+        self.thrust_lat: float = 0.0
+        self.thrust_depth: float = 0.0
+        self.thrust_yaw: float = 0.0
+
         # Vehicle Frame & Motor Telemetry State
         self.frame_id: int = DEFAULT_FRAME_ID
         self.motor_cmd_pwm: List[int] = [1500] * 8
@@ -111,6 +120,11 @@ class FuturisticHud(tk.Canvas):
         if self.frame_id != frame_id:
             self.frame_id = frame_id
             self.redraw()
+
+    def set_hud_graphics_mode(self, enabled: bool):
+        """Toggle between full jet HUD avionics graphics and pure digital telemetry mode."""
+        self.show_hud_graphics = bool(enabled)
+        self.redraw()
 
     def update_telemetry(
         self,
@@ -156,9 +170,8 @@ class FuturisticHud(tk.Canvas):
             self.cmd_depth = 0
             self.cmd_yaw = 0
 
-        # Flight is active if ARMED and ANY stick input is above threshold
+        # Stick magnitude check
         stick_magnitude = math.sqrt(self.cmd_fwd**2 + self.cmd_lat**2 + self.cmd_depth**2 + self.cmd_yaw**2)
-        self.in_flight = self.armed and (stick_magnitude > 40)
 
         # 1. Update Commanded Motor Outputs (Frame-Accurate Zero-Latency Sync with Matrix & Probe Parity)
         pred_pwms = self.matrix_mgr.compute_motor_pwms(
@@ -166,23 +179,25 @@ class FuturisticHud(tk.Canvas):
             lat=self.cmd_lat,
             depth=self.cmd_depth,
             yaw=self.cmd_yaw,
-            armed=self.armed
+            armed=True
         )
 
         servos = mav_snap.get("servo_raw") or []
-        has_active_servos = any(abs(int(s) - 1500) > 15 for s in servos if s > 0)
+        has_servos = bool(servos and any(s > 0 for s in servos))
 
         for i in range(8):
-            if self.armed and self.in_flight:
-                # Active stick control: feedforward PWMs guarantee instant frame sync with HUD streaks/gauges
-                self.motor_cmd_pwm[i] = pred_pwms[i]
-            elif self.armed and has_active_servos and i < len(servos) and servos[i] > 0:
-                # Live Pixhawk servos when holding depth/attitude autonomously (ALT_HOLD/STABILIZE)
-                self.motor_cmd_pwm[i] = int(servos[i])
-            elif not self.armed and i < len(servos) and servos[i] > 0:
-                self.motor_cmd_pwm[i] = int(servos[i])
+            if has_servos:
+                # Direct authoritative telemetry parity with Tab 2 Thruster Test & MAVLink
+                if i < len(servos) and servos[i] > 0:
+                    self.motor_cmd_pwm[i] = int(servos[i])
+                else:
+                    self.motor_cmd_pwm[i] = 1500
             else:
-                self.motor_cmd_pwm[i] = 1500
+                # Standalone fallback when servo_raw is not streamed (e.g. offline desk simulation or bench testing)
+                if stick_magnitude > 40:
+                    self.motor_cmd_pwm[i] = pred_pwms[i]
+                else:
+                    self.motor_cmd_pwm[i] = 1500
 
         # 2. Update Measured Motor Outputs from Logic Probe (ESP32/Nano)
         if nano_snap and nano_snap.get("connected", False):
@@ -197,15 +212,49 @@ class FuturisticHud(tk.Canvas):
             for i in range(8):
                 self.motor_probe_valid[i] = False
 
-        # 3. Update Propeller Spin Angles per Motor (Synchronous with active PWM output)
+        # 3. Calculate Normalized Thruster Outputs & Physical Motion Vectors from Thruster Data
+        motor_thrusts: List[float] = []
+        for i in range(8):
+            # Prefer probe PWM if verified valid hardware signal, else commanded PWM
+            pwm = self.motor_probe_pwm[i] if (self.motor_probe_valid[i] and self.motor_probe_pwm[i] > 800) else self.motor_cmd_pwm[i]
+            diff = pwm - 1500
+            if abs(diff) < 20:
+                t = 0.0
+            else:
+                t = max(-1.0, min(1.0, diff / 400.0))
+            motor_thrusts.append(t)
+
+        # In-flight is true if armed and any motor is actively producing thrust
+        max_t = max([abs(t) for t in motor_thrusts] + [0.0])
+        self.in_flight = self.armed and (max_t > 0.05)
+
+        # Project motor thrusts back through motor matrix to get true directional thrust vectors
+        matrix = self.matrix_mgr.matrix
+        def _calc_axis_thrust(axis_name: str) -> float:
+            axis_weights = matrix.get(axis_name, {})
+            weighted_sum = 0.0
+            sum_abs_weights = 0.0
+            for idx in range(8):
+                m_num = idx + 1
+                w = float(axis_weights.get(m_num, axis_weights.get(str(m_num), axis_weights.get(f"m{m_num}", 0.0))))
+                if abs(w) > 0.01:
+                    weighted_sum += motor_thrusts[idx] * w
+                    sum_abs_weights += abs(w)
+            return (weighted_sum / sum_abs_weights) if sum_abs_weights > 0.01 else 0.0
+
+        self.thrust_fwd = max(-1.0, min(1.0, _calc_axis_thrust("fwd")))
+        self.thrust_lat = max(-1.0, min(1.0, _calc_axis_thrust("lat"))) if self._has_lateral_capability() else 0.0
+        self.thrust_depth = max(-1.0, min(1.0, _calc_axis_thrust("depth")))
+        self.thrust_yaw = max(-1.0, min(1.0, _calc_axis_thrust("yaw")))
+
+        # 4. Update Propeller Spin Angles per Motor (Synchronous with active PWM output)
         for i in range(8):
             pwm = self.motor_cmd_pwm[i]
             diff = pwm - 1500
-            if self.armed:
-                if abs(diff) > 20:
-                    spin = diff / 10.0
-                else:
-                    spin = 4.0  # Smooth idle spin when armed
+            if abs(diff) > 20:
+                spin = diff / 10.0
+            elif self.armed:
+                spin = 4.0  # Smooth idle spin when armed
             else:
                 spin = 0.0
             self._prop_angles[i + 1] = (self._prop_angles[i + 1] + spin) % 360.0
@@ -219,62 +268,69 @@ class FuturisticHud(tk.Canvas):
         self.redraw()
 
     def redraw(self):
-        self.delete("all")
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if w <= 100 or h <= 100:
-            return
+        try:
+            self.delete("all")
+            w = self.winfo_width()
+            h = self.winfo_height()
+            if w <= 100 or h <= 100:
+                return
 
-        cx = w / 2.0
-        # Jet HUD center horizon positioned slightly above midpoint for natural sightline
-        cy = h * 0.38
+            if not self.show_hud_graphics:
+                self._draw_pure_telemetry_dashboard(w, h)
+                return
 
-        # 1. Subtle Cockpit Glass Background Grid & Corner Brackets
-        self._draw_hud_grid_and_brackets(w, h)
+            cx = w / 2.0
+            # Jet HUD center horizon positioned slightly above midpoint for natural sightline
+            cy = h * 0.38
 
-        # 2. Subsea Flight Particles (Speed streaks when armed & flying)
-        self._draw_particles(w, h, cx, cy)
+            # 1. Subtle Cockpit Glass Background Grid & Corner Brackets
+            self._draw_hud_grid_and_brackets(w, h)
 
-        # 3. Authentic Fighter Jet Pitch Ladder (Positive solid, Negative dashed, with hooks)
-        self._draw_jet_pitch_ladder(cx, cy, w, h)
+            # 2. Subsea Flight Particles (Speed streaks when armed & flying)
+            self._draw_particles(w, h, cx, cy)
 
-        # 4. Aircraft Boresight / Waterline Symbol (Fixed center)
-        self._draw_aircraft_waterline(cx, cy)
+            # 3. Authentic Fighter Jet Pitch Ladder (Positive solid, Negative dashed, with hooks)
+            self._draw_jet_pitch_ladder(cx, cy, w, h)
 
-        # 4b. Jet Tactical Turn Rate / Yaw Slip Coordinator
-        self._draw_jet_turn_rate_indicator(cx, cy)
+            # 4. Aircraft Boresight / Waterline Symbol (Fixed center)
+            self._draw_aircraft_waterline(cx, cy)
 
-        # 5. Jet Bank Angle Arc & Roll Pointer
-        self._draw_jet_roll_arc(cx, cy)
+            # 4b. Jet Tactical Turn Rate / Yaw Slip Coordinator
+            self._draw_jet_turn_rate_indicator(cx, cy)
 
-        # 6. Dynamic Flight Path Marker (Velocity Vector Indicator)
-        self._draw_flight_path_marker(cx, cy)
+            # 5. Jet Bank Angle Arc & Roll Pointer
+            self._draw_jet_roll_arc(cx, cy)
 
-        # 7. Jet Horizontal Compass Tape (Top Side Center)
-        self._draw_jet_compass_tape(w, cx)
+            # 6. Dynamic Flight Path Marker (Velocity Vector Indicator)
+            self._draw_flight_path_marker(cx, cy)
 
-        # 8. Side Vertical Tapes (Generously spaced from pods and center HUD)
-        tape_top = 58.0
-        tape_bot = h - 95.0
-        tape_l_x = 224.0
-        tape_r_x = w - 224.0
-        self._draw_jet_depth_tape(tape_l_x, tape_top, tape_bot)
-        self._draw_jet_thrust_tape(tape_r_x, tape_top, tape_bot)
+            # 7. Jet Horizontal Compass Tape (Top Side Center)
+            self._draw_jet_compass_tape(w, cx)
 
-        # 9. Tactical Corner Telemetry Pods (Classic spacious arrangement, zero overlap)
-        pod_w = 195.0
-        pod_h = 78.0
-        # Top-Left: Power & Battery Rails
-        self._draw_power_pod(18.0, 50.0, w=pod_w, h=pod_h)
-        # Top-Right: Environment & Hull Health
-        self._draw_environment_pod(w - pod_w - 18.0, 50.0, w=pod_w, h=pod_h)
-        # Bottom-Left: Flight Safety & Attitude Status
-        self._draw_flight_status_pod(18.0, h - pod_h - 18.0, w=pod_w, h=pod_h)
-        # Bottom-Right: Pilot Inputs & Gain
-        self._draw_pilot_pod(w - pod_w - 18.0, h - pod_h - 18.0, w=pod_w, h=pod_h)
+            # 8. Side Vertical Tapes (Generously spaced from pods and center HUD)
+            tape_top = 58.0
+            tape_bot = h - 95.0
+            tape_l_x = 224.0
+            tape_r_x = w - 224.0
+            self._draw_jet_depth_tape(tape_l_x, tape_top, tape_bot)
+            self._draw_jet_thrust_tape(tape_r_x, tape_top, tape_bot)
 
-        # 10. Clean 2D Frame ROV Representation (Zero 3D clutter, 100% 2D top-down)
-        self._draw_2d_frame_rov(cx, h - 90.0, w, h)
+            # 9. Tactical Corner Telemetry Pods (Classic spacious arrangement, zero overlap)
+            pod_w = 195.0
+            pod_h = 78.0
+            # Top-Left: Power & Battery Rails
+            self._draw_power_pod(18.0, 50.0, w=pod_w, h=pod_h)
+            # Top-Right: Environment & Hull Health
+            self._draw_environment_pod(w - pod_w - 18.0, 50.0, w=pod_w, h=pod_h)
+            # Bottom-Left: Flight Safety & Attitude Status
+            self._draw_flight_status_pod(18.0, h - pod_h - 18.0, w=pod_w, h=pod_h)
+            # Bottom-Right: Pilot Inputs & Gain
+            self._draw_pilot_pod(w - pod_w - 18.0, h - pod_h - 18.0, w=pod_w, h=pod_h)
+
+            # 10. Clean 2D Frame ROV Representation (Zero 3D clutter, 100% 2D top-down)
+            self._draw_2d_frame_rov(cx, h - 90.0, w, h)
+        except Exception:
+            pass
 
     def _has_lateral_capability(self) -> bool:
         """Returns True if the vehicle frame has physical lateral strafe thrusters."""
@@ -300,7 +356,7 @@ class FuturisticHud(tk.Canvas):
     def _draw_particles(self, w: float, h: float, cx: float, cy: float):
         """
         Simulates 3D subsea marine snow / flow streaks rushing past the camera.
-        Accurately responds to Forward, Depth, and Yaw turning rotation.
+        Accurately responds to Forward, Depth, and Yaw turning rotation derived from Thrusters.
         Suppresses lateral strafe streaks on vehicles without lateral thrusters (e.g. SimpleROV-4).
         """
         vz = 2.0
@@ -308,15 +364,13 @@ class FuturisticHud(tk.Canvas):
         vy = 0.0
         rot_yaw = 0.0
 
-        lat_cmd = self.cmd_lat if self._has_lateral_capability() else 0
-
         if self.in_flight:
-            vz += (self.cmd_fwd / 1000.0) * 16.0
-            vx -= (lat_cmd / 1000.0) * 9.0
-            vy -= (self.cmd_depth / 1000.0) * 9.0
+            vz += self.thrust_fwd * 16.0
+            vx -= self.thrust_lat * 9.0
+            vy -= self.thrust_depth * 9.0
             # Yaw turning sweeps particles horizontally across FOV and pivots the 3D particle field
-            vx -= (self.cmd_yaw / 1000.0) * 14.0
-            rot_yaw = -(self.cmd_yaw / 1000.0) * 0.032
+            vx -= self.thrust_yaw * 14.0
+            rot_yaw = -self.thrust_yaw * 0.032
 
         focal = 260.0
         cos_y = math.cos(rot_yaw) if rot_yaw != 0.0 else 1.0
@@ -339,8 +393,9 @@ class FuturisticHud(tk.Canvas):
             elif p.z > 650:
                 p.z = 25.0
 
-            sx = cx + (p.x * focal) / p.z
-            sy = cy + (p.y * focal) / p.z
+            pz = max(15.0, p.z)
+            sx = cx + (p.x * focal) / pz
+            sy = cy + (p.y * focal) / pz
 
             if 15 <= sx <= w - 15 and 15 <= sy <= h - 15:
                 depth_ratio = max(0.1, min(1.0, 1.0 - (p.z / 650.0)))
@@ -459,8 +514,8 @@ class FuturisticHud(tk.Canvas):
         self.create_line(cx - bar_half_w, bar_y - 4, cx - bar_half_w, bar_y + 4, fill=COLOR_DIM, width=1)
         self.create_line(cx + bar_half_w, bar_y - 4, cx + bar_half_w, bar_y + 4, fill=COLOR_DIM, width=1)
 
-        # Dynamic Yaw Indicator Pointer / Pip
-        yaw_ratio = max(-1.0, min(1.0, self.cmd_yaw / 1000.0))
+        # Dynamic Yaw Indicator Pointer / Pip (Calculated from thruster data)
+        yaw_ratio = max(-1.0, min(1.0, self.thrust_yaw))
         pip_x = cx + yaw_ratio * (bar_half_w - 4)
         pip_color = COLOR_GREEN if abs(yaw_ratio) > 0.08 else COLOR_CYAN
         self.create_polygon(
@@ -471,8 +526,8 @@ class FuturisticHud(tk.Canvas):
         )
 
         # Digital rate badge if actively yawing
-        if abs(self.cmd_yaw) > 40:
-            turn_dir = "R ▶" if self.cmd_yaw > 0 else "◀ L"
+        if abs(self.thrust_yaw) > 0.05:
+            turn_dir = "R ▶" if self.thrust_yaw > 0 else "◀ L"
             pct = int(abs(yaw_ratio) * 100)
             self.create_text(cx, bar_y + 14, text=f"YAW {turn_dir} {pct}%", fill=COLOR_CYAN, font=FONT_HUD_SMALL)
 
@@ -506,9 +561,8 @@ class FuturisticHud(tk.Canvas):
         if not self.armed:
             return
 
-        lat_cmd = self.cmd_lat if self._has_lateral_capability() else 0
-        fpm_dx = (self.cmd_yaw / 1000.0) * 55.0 + (lat_cmd / 1000.0) * 40.0
-        fpm_dy = -(self.cmd_depth / 1000.0) * 40.0
+        fpm_dx = self.thrust_yaw * 55.0 + self.thrust_lat * 40.0
+        fpm_dy = -self.thrust_depth * 40.0
         fpm_x = max(cx - 65.0, min(cx + 65.0, cx + fpm_dx))
         fpm_y = max(cy - 55.0, min(cy + 55.0, cy + fpm_dy))
 
@@ -713,8 +767,8 @@ class FuturisticHud(tk.Canvas):
         frame_name = frame_data.get("name", "SimpleROV-4")
 
         # Tactical 2D ROV Deck Plate
-        deck_w = min(360.0, w * 0.36)
-        deck_h = 140.0
+        deck_w = min(360.0, max(260.0, w - 20.0)) if w < 420 else min(360.0, w * 0.36)
+        deck_h = min(170.0, max(120.0, h - 30.0)) if h < 240 else 140.0
         d_x1 = cx - deck_w / 2.0
         d_x2 = cx + deck_w / 2.0
         d_y1 = cy - deck_h / 2.0 + 4.0
@@ -757,11 +811,11 @@ class FuturisticHud(tk.Canvas):
         self.create_text(cx, rov_cy - tube_h/2 - 11, text="▲ FWD", fill=COLOR_CYAN, font=FONT_HUD_SMALL)
 
         # Dynamic Yaw Turning Moment Indicators (Curved rotational arcs & arrows around ROV)
-        if self.armed and abs(self.cmd_yaw) > 35:
-            turn_is_right = (self.cmd_yaw > 0)
+        if self.armed and abs(self.thrust_yaw) > 0.06:
+            turn_is_right = (self.thrust_yaw > 0)
             arc_r = 34.0
-            yaw_col = COLOR_GREEN if abs(self.cmd_yaw) > 120 else COLOR_CYAN
-            yaw_dash = () if abs(self.cmd_yaw) > 200 else (4, 3)
+            yaw_col = COLOR_GREEN if abs(self.thrust_yaw) > 0.25 else COLOR_CYAN
+            yaw_dash = () if abs(self.thrust_yaw) > 0.40 else (4, 3)
 
             # Draw curved turn vector arc above bow
             if turn_is_right:
@@ -816,18 +870,29 @@ class FuturisticHud(tk.Canvas):
             delta = (prb_pwm - cmd_pwm) if is_prb else 0
             thrust_val = (cmd_pwm - 1500) / 500.0
 
-            # Color highlight based on activity
-            is_active_fwd = (self.armed and cmd_pwm > 1520)
-            is_active_rev = (self.armed and cmd_pwm < 1480)
-            if is_active_fwd:
+            # Direction and reversal checks
+            is_rev_motor = (self.matrix_mgr.motor_directions.get(num, 1) == -1)
+
+            # Color highlight based on activity (both bench test and operational flight)
+            eff_fwd = (cmd_pwm > 1520) if not is_rev_motor else (cmd_pwm < 1480)
+            eff_rev = (cmd_pwm < 1480) if not is_rev_motor else (cmd_pwm > 1520)
+            is_active = abs(cmd_pwm - 1500) > 20
+
+            if eff_fwd:
                 t_border = COLOR_GREEN
                 prop_col = COLOR_GREEN
-            elif is_active_rev:
+            elif eff_rev:
                 t_border = COLOR_AMBER
                 prop_col = COLOR_AMBER
+            elif is_active:
+                t_border = COLOR_CYAN
+                prop_col = COLOR_CYAN
             else:
                 t_border = COLOR_CYAN_DIM if self.armed else COLOR_BORDER_LIGHT
                 prop_col = COLOR_CYAN_DIM if self.armed else COLOR_DIM
+
+            is_active_fwd = eff_fwd
+            is_active_rev = eff_rev
 
             p_ang = math.radians(self._prop_angles.get(num, 0.0))
 
@@ -935,9 +1000,224 @@ class FuturisticHud(tk.Canvas):
             else:
                 m_col = COLOR_WHITE
 
-            self.create_text(lbl_x, ty - 5, text=f"M{num}:{cmd_pwm}", fill=m_col, font=FONT_HUD_SMALL, anchor=anchor)
+            rev_label = " [REV]" if is_rev_motor else ""
+            self.create_text(lbl_x, ty - 5, text=f"M{num}{rev_label}:{cmd_pwm}", fill=m_col, font=FONT_HUD_SMALL, anchor=anchor)
             if is_prb:
                 p_col = COLOR_AMBER if abs(delta) > 25 else COLOR_GREEN
                 self.create_text(lbl_x, ty + 5, text=f"P:{prb_pwm}", fill=p_col, font=FONT_HUD_SMALL, anchor=anchor)
             else:
                 self.create_text(lbl_x, ty + 5, text="P:--", fill=COLOR_DIM, font=FONT_HUD_SMALL, anchor=anchor)
+
+    def _draw_pure_telemetry_dashboard(self, w: float, h: float):
+        """
+        Clean, high-visibility, lightweight digital telemetry dashboard.
+        Disables fighter jet HUD graphics (pitch ladder, waterline, particles, compass tape)
+        and renders a clean 3-panel avionics console with the 2D ROV thruster array monitor.
+        """
+        # Outer subtle frame
+        self.create_rectangle(8, 8, w - 8, h - 8, outline=COLOR_BORDER_LIGHT, width=1)
+
+        # 1. Top Avionics Header Bar (Height: 38px)
+        top_y1, top_y2 = 12.0, 48.0
+        self.create_rectangle(14, top_y1, w - 14, top_y2, fill="#0b101b", outline=COLOR_BORDER_LIGHT)
+
+        # System Banner
+        self.create_text(
+            24, (top_y1 + top_y2) / 2.0,
+            text="PIXDOCTOR DIGITAL TELEMETRY DASHBOARD",
+            fill=COLOR_CYAN,
+            font=FONT_HUD_TITLE,
+            anchor="w"
+        )
+
+        # Mode Badge
+        mode_str = f"MODE: {self.mode_name}"
+        self.create_rectangle(w * 0.44 - 55, top_y1 + 5, w * 0.44 + 55, top_y2 - 5, fill="#131e33", outline=COLOR_CYAN_DIM)
+        self.create_text(w * 0.44, (top_y1 + top_y2) / 2.0, text=mode_str, fill=COLOR_WHITE, font=FONT_HUD_BOLD)
+
+        # Arm Status Badge
+        arm_col = COLOR_GREEN if self.armed else COLOR_RED
+        arm_text = "ARMED" if self.armed else "DISARMED"
+        arm_bg = "#0c2818" if self.armed else "#2a0f14"
+        self.create_rectangle(w * 0.58 - 48, top_y1 + 5, w * 0.58 + 48, top_y2 - 5, fill=arm_bg, outline=arm_col)
+        self.create_text(w * 0.58, (top_y1 + top_y2) / 2.0, text=arm_text, fill=arm_col, font=FONT_HUD_BOLD)
+
+        # Leak Status Badge
+        leak_col = COLOR_RED if self.leak_alert else COLOR_GREEN
+        leak_text = "LEAK ALERT!" if self.leak_alert else "LEAK: OK"
+        leak_bg = "#350c12" if self.leak_alert else "#0a1e14"
+        self.create_rectangle(w * 0.72 - 45, top_y1 + 5, w * 0.72 + 45, top_y2 - 5, fill=leak_bg, outline=leak_col)
+        self.create_text(w * 0.72, (top_y1 + top_y2) / 2.0, text=leak_text, fill=leak_col, font=FONT_HUD_BOLD)
+
+        # Link Rate
+        self.create_text(
+            w - 24, (top_y1 + top_y2) / 2.0,
+            text=f"RATE: {self.packet_rate:.0f} Hz",
+            fill=COLOR_DIM,
+            font=FONT_HUD_REG,
+            anchor="e"
+        )
+
+        # 2. Main Console Layout: 3 Columns
+        # Available vertical space: y=54 to h-34
+        pan_y1 = 54.0
+        pan_y2 = h - 34.0
+        pan_h = pan_y2 - pan_y1
+
+        # Column widths: Left 27%, Center 46%, Right 27%
+        col1_x1 = 14.0
+        col1_w = max(210.0, min(280.0, w * 0.27))
+        col1_x2 = col1_x1 + col1_w
+
+        col3_w = col1_w
+        col3_x2 = w - 14.0
+        col3_x1 = col3_x2 - col3_w
+
+        col2_x1 = col1_x2 + 10.0
+        col2_x2 = col3_x1 - 10.0
+
+        # ================= LEFT COLUMN: NAVIGATION & ENVIRONMENT =================
+        self.create_rectangle(col1_x1, pan_y1, col1_x2, pan_y2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
+        self.create_rectangle(col1_x1, pan_y1, col1_x2, pan_y1 + 22, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
+        self.create_text(col1_x1 + 10, pan_y1 + 11, text="[ NAVIGATION & ENVIRONMENT ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+
+        cy = pan_y1 + 35
+        # Primary Depth Display (Massive digital readout)
+        self.create_text(col1_x1 + 12, cy, text="DEPTH", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
+        cy += 20
+        self.create_text(col1_x1 + 12, cy, text=f"{self.depth:.2f} m", fill=COLOR_CYAN, font=FONT_HUD_HUGE, anchor="w")
+        cy += 26
+        vs_col = COLOR_GREEN if abs(self.vert_speed) > 0.05 else COLOR_DIM
+        self.create_text(col1_x1 + 12, cy, text=f"VERT SPEED: {self.vert_speed:+.2f} m/s", fill=vs_col, font=FONT_HUD_REG, anchor="w")
+        cy += 18
+        self.create_text(col1_x1 + 12, cy, text=f"PRESSURE:   {self.pressure:.3f} bar", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+        cy += 18
+        self.create_text(col1_x1 + 12, cy, text=f"TEMP:       {self.temp:.1f} °C", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+
+        # Divider
+        cy += 16
+        self.create_line(col1_x1 + 10, cy, col1_x2 - 10, cy, fill=COLOR_BORDER_LIGHT)
+        cy += 14
+
+        # Attitude & Compass Section
+        self.create_text(col1_x1 + 12, cy, text="ATTITUDE & HEADING", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
+        cy += 20
+        cardinals = ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "N"]
+        c_idx = int(((self.heading + 22.5) % 360) // 45)
+        card_str = cardinals[c_idx]
+        self.create_text(col1_x1 + 12, cy, text=f"{int(self.heading):03d}° [{card_str}]", fill=COLOR_WHITE, font=FONT_HUD_LARGE, anchor="w")
+        cy += 24
+        self.create_text(col1_x1 + 12, cy, text=f"ROLL:  {self.roll:+.1f}°", fill=COLOR_CYAN, font=FONT_HUD_REG, anchor="w")
+        cy += 18
+        self.create_text(col1_x1 + 12, cy, text=f"PITCH: {self.pitch:+.1f}°", fill=COLOR_CYAN, font=FONT_HUD_REG, anchor="w")
+
+        # Visual roll/pitch miniature indicator
+        cy += 24
+        ind_cx = (col1_x1 + col1_x2) / 2.0
+        ind_w = (col1_w - 30) / 2.0
+        self.create_line(ind_cx - ind_w, cy, ind_cx + ind_w, cy, fill=COLOR_BORDER_LIGHT, width=1)
+        self.create_line(ind_cx, cy - 8, ind_cx, cy + 8, fill=COLOR_BORDER_LIGHT, width=1)
+        rad_r = math.radians(self.roll)
+        pitch_px = max(-10.0, min(10.0, self.pitch * 0.8))
+        cos_r, sin_r = math.cos(rad_r), math.sin(rad_r)
+        h_x1 = ind_cx - ind_w * cos_r
+        h_y1 = (cy - pitch_px) - ind_w * sin_r
+        h_x2 = ind_cx + ind_w * cos_r
+        h_y2 = (cy - pitch_px) + ind_w * sin_r
+        self.create_line(h_x1, h_y1, h_x2, h_y2, fill=COLOR_GREEN, width=2)
+        self.create_oval(ind_cx - 2, cy - 2, ind_cx + 2, cy + 2, fill=COLOR_CYAN, outline="")
+
+        # ================= CENTER COLUMN: 2D ROV & MOTOR DYNAMICS =================
+        self.create_rectangle(col2_x1, pan_y1, col2_x2, pan_y2, fill="#060810", outline=COLOR_BORDER_LIGHT)
+        self.create_rectangle(col2_x1, pan_y1, col2_x2, pan_y1 + 22, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
+        self.create_text(col2_x1 + 10, pan_y1 + 11, text="[ 2D ROV HULL & LIVE THRUST DYNAMICS ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+
+        center_cx = (col2_x1 + col2_x2) / 2.0
+        # Embed the crisp 2D ROV frame right in the center panel!
+        rov_plot_cy = pan_y1 + 22 + (pan_y2 - pan_y1 - 22) / 2.0
+        self._draw_2d_frame_rov(center_cx, rov_plot_cy, col2_x2 - col2_x1, pan_h)
+
+        # ================= RIGHT COLUMN: POWER & PROPULSION =================
+        self.create_rectangle(col3_x1, pan_y1, col3_x2, pan_y2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
+        self.create_rectangle(col3_x1, pan_y1, col3_x2, pan_y1 + 22, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
+        self.create_text(col3_x1 + 10, pan_y1 + 11, text="[ POWER & PROPULSION ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+
+        ry = pan_y1 + 35
+        # Battery Section
+        self.create_text(col3_x1 + 12, ry, text="BATTERY SYSTEM", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
+        ry += 20
+        v_col = COLOR_GREEN if self.batt_v >= 14.5 else (COLOR_AMBER if self.batt_v >= 13.8 else COLOR_RED)
+        self.create_text(col3_x1 + 12, ry, text=f"{self.batt_v:.2f} V", fill=v_col, font=FONT_HUD_HUGE, anchor="w")
+        ry += 24
+        self.create_text(col3_x1 + 12, ry, text=f"CURRENT:  {self.batt_a:.1f} A", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+        ry += 18
+        self.create_text(col3_x1 + 12, ry, text=f"VCC RAIL: {self.vcc_v:.2f} V", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+
+        # Battery Bar
+        ry += 16
+        b_bar_w = col3_w - 24
+        self.create_rectangle(col3_x1 + 12, ry, col3_x1 + 12 + b_bar_w, ry + 6, outline=COLOR_BORDER_LIGHT)
+        pct = max(0.0, min(1.0, (self.batt_v - 13.5) / (16.8 - 13.5))) if self.batt_v > 5.0 else 0.0
+        if pct > 0.0:
+            self.create_rectangle(col3_x1 + 13, ry + 1, col3_x1 + 12 + int(pct * b_bar_w), ry + 5, fill=v_col, outline="")
+        ry += 14
+
+        # Divider
+        self.create_line(col3_x1 + 10, ry, col3_x2 - 10, ry, fill=COLOR_BORDER_LIGHT)
+        ry += 14
+
+        # Propulsion Forces / Thrust Vectors (calculated from active motors)
+        self.create_text(col3_x1 + 12, ry, text="THRUST VECTORS (FROM MOTORS)", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
+        ry += 18
+
+        vector_items = [
+            ("FORWARD", self.thrust_fwd, COLOR_GREEN if self.thrust_fwd >= 0 else COLOR_AMBER),
+            ("LATERAL", self.thrust_lat, COLOR_CYAN),
+            ("DEPTH", self.thrust_depth, COLOR_GREEN if self.thrust_depth >= 0 else COLOR_AMBER),
+            ("YAW", self.thrust_yaw, COLOR_GREEN if self.thrust_yaw >= 0 else COLOR_CYAN),
+        ]
+
+        bar_len = col3_w - 110
+        for name, val, col in vector_items:
+            self.create_text(col3_x1 + 12, ry, text=f"{name:7s}", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+            bx1 = col3_x1 + 80
+            bx2 = bx1 + bar_len
+            bcx = (bx1 + bx2) / 2.0
+            self.create_line(bx1, ry, bx2, ry, fill=COLOR_BORDER_LIGHT, width=1)
+            self.create_line(bcx, ry - 4, bcx, ry + 4, fill=COLOR_DIM, width=1)
+            val_clamp = max(-1.0, min(1.0, val))
+            if abs(val_clamp) > 0.02:
+                v_x = bcx + val_clamp * (bar_len / 2.0)
+                self.create_line(bcx, ry, v_x, ry, fill=col, width=4)
+            pct_val = int(val_clamp * 100)
+            self.create_text(bx2 + 6, ry, text=f"{pct_val:+3d}%", fill=col, font=FONT_HUD_SMALL, anchor="w")
+            ry += 20
+
+        # Pilot Controller info
+        ry += 6
+        self.create_line(col3_x1 + 10, ry, col3_x2 - 10, ry, fill=COLOR_BORDER_LIGHT)
+        ry += 14
+        ctrl_col = COLOR_GREEN if self.gamepad_connected else COLOR_DIM
+        self.create_text(col3_x1 + 12, ry, text=f"PILOT: {self.controller_name[:18]}", fill=ctrl_col, font=FONT_HUD_REG, anchor="w")
+        ry += 16
+        self.create_text(col3_x1 + 12, ry, text=f"GAIN: {int(self.gain * 100)}% | STATUS: {self.statustext[:16]}", fill=COLOR_DIM, font=FONT_HUD_SMALL, anchor="w")
+
+        # 3. Bottom Status Strip (Height: 22px)
+        bot_y1 = h - 28.0
+        bot_y2 = h - 8.0
+        self.create_rectangle(14, bot_y1, w - 14, bot_y2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
+        frame_name = self.matrix_mgr.get_frame_name(self.frame_id)
+        self.create_text(
+            24, (bot_y1 + bot_y2) / 2.0,
+            text=f"FRAME: {frame_name.upper()} (ID {self.frame_id}) | ESC COMM PROTOCOL: PWM 1.1µs | MODE: PURE TELEMETRY",
+            fill=COLOR_CYAN_DIM,
+            font=FONT_HUD_SMALL,
+            anchor="w"
+        )
+        self.create_text(
+            w - 24, (bot_y1 + bot_y2) / 2.0,
+            text="[ HUD GRAPHICS: DISABLED ]",
+            fill=COLOR_AMBER,
+            font=FONT_HUD_SMALL,
+            anchor="e"
+        )

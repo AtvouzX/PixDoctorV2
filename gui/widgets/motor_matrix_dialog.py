@@ -68,6 +68,12 @@ class MotorMatrixDialog(tk.Toplevel):
         # Direction vars: motor_num (1..8) -> tk.IntVar (1 or -1)
         self.dir_vars: Dict[int, tk.IntVar] = {}
 
+        # Simulated stick inputs for bench / offline testing
+        self._sim_fwd = 0
+        self._sim_lat = 0
+        self._sim_depth = 0
+        self._sim_yaw = 0
+
         self._running = True
         self._build_ui()
         self._sync_ui_from_manager()
@@ -367,6 +373,60 @@ class MotorMatrixDialog(tk.Toplevel):
         )
         self.lbl_motors_readout.pack(fill=tk.X)
 
+        # Quick Test Bench Stimulus Bar (allows instant testing of Yaw and Matrix weights without controller)
+        stim_bar = tk.Frame(container, bg=COLOR_SURFACE)
+        stim_bar.pack(fill=tk.X, pady=(6, 2))
+
+        tk.Label(
+            stim_bar,
+            text="TEST BENCH STIMULUS:",
+            bg=COLOR_SURFACE,
+            fg=COLOR_TEXT_DIM,
+            font=FONT_SMALL
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(
+            stim_bar,
+            text="YAW RIGHT (+50%)",
+            style="Retro.TButton",
+            command=lambda: self._set_sim(yaw=500)
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            stim_bar,
+            text="YAW LEFT (-50%)",
+            style="Retro.TButton",
+            command=lambda: self._set_sim(yaw=-500)
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            stim_bar,
+            text="FWD (+50%)",
+            style="Retro.TButton",
+            command=lambda: self._set_sim(fwd=500)
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            stim_bar,
+            text="DEPTH (+50%)",
+            style="Retro.TButton",
+            command=lambda: self._set_sim(depth=500)
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            stim_bar,
+            text="CENTER (0)",
+            style="Invert.TButton",
+            command=lambda: self._set_sim(0, 0, 0, 0)
+        ).pack(side=tk.LEFT, padx=4)
+
+    def _set_sim(self, fwd: int = 0, lat: int = 0, depth: int = 0, yaw: int = 0):
+        """Set simulated stick deflection for testing matrix reactions in dialog."""
+        self._sim_fwd = fwd
+        self._sim_lat = lat
+        self._sim_depth = depth
+        self._sim_yaw = yaw
+
     def _sync_ui_from_manager(self):
         snap = self.matrix_mgr.get_snapshot()
         self.preset_var.set(snap["active_preset"])
@@ -425,6 +485,7 @@ class MotorMatrixDialog(tk.Toplevel):
                 except ValueError:
                     pass
         self.matrix_mgr.save_to_file()
+        self.matrix_mgr._notify()
         self.lbl_status.config(text="Custom thruster weights updated.", fg=COLOR_TEXT_WHITE)
 
     def _on_preset_selected(self, event=None):
@@ -432,8 +493,12 @@ class MotorMatrixDialog(tk.Toplevel):
         if name in DEFAULT_PRESETS:
             self.matrix_mgr.apply_preset(name, notify=True)
             self._sync_ui_from_manager()
-            # Also sync Pixhawk parameters
+            # Also sync Pixhawk parameters (FRAME_CONFIG and MOT_x_DIRECTION)
             if self.mav_mgr and self.mav_mgr.is_connected():
+                frame_id = self.matrix_mgr.get_current_frame_id()
+                if self.param_mgr:
+                    self.param_mgr.set_value("FRAME_CONFIG", float(frame_id))
+                self.mav_mgr.set_param("FRAME_CONFIG", float(frame_id))
                 for m_idx, d_val in self.matrix_mgr.motor_directions.items():
                     p_name = f"MOT_{m_idx}_DIRECTION"
                     if self.param_mgr:
@@ -472,7 +537,7 @@ class MotorMatrixDialog(tk.Toplevel):
         self.lbl_stick_info.config(text=f"Current Yaw: {yaw_str} | Current Lateral: {lat_str}")
 
     def _apply_and_save(self):
-        # Save matrix
+        # Save matrix weights
         for axis, row in self.cell_vars.items():
             for m_idx, var in row.items():
                 try:
@@ -485,20 +550,38 @@ class MotorMatrixDialog(tk.Toplevel):
         for m_idx, var in self.dir_vars.items():
             self.matrix_mgr.set_motor_direction(m_idx, var.get(), notify=False)
 
-        self.matrix_mgr.save_to_file()
+        saved = self.matrix_mgr.save_to_file()
+        self.matrix_mgr._notify()
 
-        # Commit to Pixhawk parameters
+        frame_id = self.matrix_mgr.get_current_frame_id()
+
+        # Commit hardware parameters to Pixhawk
         if self.mav_mgr and self.mav_mgr.is_connected():
+            if self.param_mgr:
+                self.param_mgr.set_value("FRAME_CONFIG", float(frame_id))
+            self.mav_mgr.set_param("FRAME_CONFIG", float(frame_id))
+
             for m_idx, d_val in self.matrix_mgr.motor_directions.items():
                 p_name = f"MOT_{m_idx}_DIRECTION"
                 if self.param_mgr:
                     self.param_mgr.set_value(p_name, float(d_val))
                 self.mav_mgr.set_param(p_name, float(d_val))
-            msg = "Saved configuration and synced MOT_x_DIRECTION parameters to Pixhawk!"
-        else:
-            msg = "Saved configuration locally. Connect to Pixhawk to upload parameters."
 
-        self.lbl_status.config(text=msg, fg="#00ff88")
+            msg = (
+                f"Configuration Saved & Synchronized:\n"
+                f"• Saved 4x8 Motor Participation Matrix (Fwd, Lat, Depth, Yaw) to motor_matrix_config.json\n"
+                f"• Synced Pixhawk FRAME_CONFIG = {frame_id}\n"
+                f"• Synced Pixhawk MOT_1..8_DIRECTION parameters\n"
+                f"• Active flight streamer polarities updated"
+            )
+        else:
+            msg = (
+                f"Configuration Saved Locally:\n"
+                f"• Saved 4x8 Motor Participation Matrix (Fwd, Lat, Depth, Yaw) & Stick Mappings to motor_matrix_config.json\n"
+                f"• Connect to Pixhawk to sync FRAME_CONFIG ({frame_id}) and MOT_1..8_DIRECTION"
+            )
+
+        self.lbl_status.config(text="Configuration saved and parameters synchronized!", fg="#00ff88")
         messagebox.showinfo("Configuration Saved", msg, parent=self)
 
     def _revert(self):
@@ -507,39 +590,68 @@ class MotorMatrixDialog(tk.Toplevel):
         self.lbl_status.config(text="Reverted all changes to saved file.", fg=COLOR_TEXT_WHITE)
 
     def _start_live_telemetry_loop(self):
-        if not self._running:
+        if not getattr(self, "_running", False) or not self.winfo_exists():
             return
 
-        # Fetch gamepad snapshot
-        pad_snap = self.gamepad_mgr.state.get_snapshot() if self.gamepad_mgr else None
-        cmds = self.matrix_mgr.extract_gamepad_commands(pad_snap)
-        gain_pct = int((pad_snap.get("gain", 0.50) if pad_snap else 0.50) * 100)
+        try:
+            # Fetch gamepad snapshot
+            pad_snap = self.gamepad_mgr.state.get_snapshot() if self.gamepad_mgr else None
+            cmds = self.matrix_mgr.extract_gamepad_commands(pad_snap)
+            gain_pct = int((pad_snap.get("gain", 0.50) if pad_snap else 0.50) * 100)
 
-        fwd, lat, depth, yaw = cmds["fwd"], cmds["lat"], cmds["depth"], cmds["yaw"]
-        self.lbl_pad_readout.config(
-            text=f"PILOT STICKS -> Fwd: {fwd:+4d} | Lat: {lat:+4d} | Depth: {depth:+4d} | Yaw: {yaw:+4d} | Gain: {gain_pct}%"
-        )
+            pad_connected = bool(pad_snap and pad_snap.get("connected", False))
+            has_stick_input = pad_connected and (
+                abs(cmds["fwd"]) > 40 or abs(cmds["lat"]) > 40 or
+                abs(cmds["depth"]) > 40 or abs(cmds["yaw"]) > 40
+            )
 
-        # Compute calculated PWMs
-        calc_pwms = self.matrix_mgr.compute_motor_pwms(fwd, lat, depth, yaw, armed=True)
+            if has_stick_input or pad_connected:
+                fwd = cmds["fwd"]
+                lat = cmds["lat"]
+                depth = cmds["depth"]
+                yaw = cmds["yaw"]
+                mav_yaw = cmds.get("mav_yaw", yaw)
+                tag = ""
+            elif self._sim_fwd != 0 or self._sim_lat != 0 or self._sim_depth != 0 or self._sim_yaw != 0:
+                fwd = self._sim_fwd
+                lat = self._sim_lat
+                depth = self._sim_depth
+                yaw = self._sim_yaw
+                pols = self.matrix_mgr.get_axis_polarities()
+                mav_yaw = int(yaw * pols["yaw"])
+                tag = " [BENCH SIM]"
+            else:
+                fwd, lat, depth, yaw = 0, 0, 0, 0
+                mav_yaw = 0
+                tag = ""
 
-        # Fetch measured probe PWMs
-        meas_pwms = self.nano_mgr.state.measured_pwm if self.nano_mgr else [0] * 8
-        valids = self.nano_mgr.state.signal_valid if self.nano_mgr else [False] * 8
+            self.lbl_pad_readout.config(
+                text=f"PILOT STICKS{tag} -> Fwd: {fwd:+4d} | Lat: {lat:+4d} | Depth: {depth:+4d} | Yaw: {yaw:+4d} (FC: {mav_yaw:+4d}) | Gain: {gain_pct}%"
+            )
 
-        # Build comparison string for M1..M4
-        parts = []
-        for i in range(4):
-            c_pwm = calc_pwms[i]
-            is_v = valids[i] if i < len(valids) else False
-            p_pwm = meas_pwms[i] if (is_v and i < len(meas_pwms)) else 0
-            p_str = f"{p_pwm}" if is_v else "--"
-            delta = (p_pwm - c_pwm) if is_v else 0
-            flag = " [SYNC!]" if (is_v and abs(delta) <= 25) else (" [INV?]" if (is_v and abs(p_pwm + c_pwm - 3000) <= 50) else "")
-            parts.append(f"M{i+1}: {c_pwm} (P:{p_str}{flag})")
+            # Compute calculated PWMs from active allocation matrix
+            calc_pwms = self.matrix_mgr.compute_motor_pwms(fwd, lat, depth, yaw, armed=True)
 
-        self.lbl_motors_readout.config(
-            text="MOTOR OUTPUTS (Cmd vs Probe) -> " + " | ".join(parts)
-        )
+            # Fetch measured probe PWMs
+            meas_pwms = self.nano_mgr.state.measured_pwm if self.nano_mgr else [0] * 8
+            valids = self.nano_mgr.state.signal_valid if self.nano_mgr else [False] * 8
 
-        self.after(50, self._start_live_telemetry_loop)
+            # Build comparison string for M1..M4
+            parts = []
+            for i in range(4):
+                c_pwm = calc_pwms[i]
+                is_v = valids[i] if i < len(valids) else False
+                p_pwm = meas_pwms[i] if (is_v and i < len(meas_pwms)) else 0
+                p_str = f"{p_pwm}" if is_v else "--"
+                delta = (p_pwm - c_pwm) if is_v else 0
+                flag = " [SYNC!]" if (is_v and abs(delta) <= 25) else (" [INV?]" if (is_v and abs(p_pwm + c_pwm - 3000) <= 50) else "")
+                parts.append(f"M{i+1}: {c_pwm} (P:{p_str}{flag})")
+
+            self.lbl_motors_readout.config(
+                text="MOTOR OUTPUTS (Cmd vs Probe) -> " + " | ".join(parts)
+            )
+        except Exception:
+            return
+
+        if getattr(self, "_running", False) and self.winfo_exists():
+            self.after(50, self._start_live_telemetry_loop)

@@ -83,6 +83,7 @@ class ControllerView(tk.Frame):
         self.selected_action_var = tk.StringVar(value="TOGGLE_ARM")
 
         self._build_ui()
+        self.gamepad_mgr.register_profile_callback(lambda name: self.after(0, self._sync_controls_from_manager))
 
     def _build_ui(self):
         # 1. Top Section: Interactive HUD Visualizer
@@ -129,9 +130,92 @@ class ControllerView(tk.Frame):
             command=self._open_motor_matrix_dialog
         ).pack(side=tk.RIGHT, padx=4)
 
-        # 2. Bottom Section: Split Columns (Calibration & Mapping)
+        # 2. Profile Management Bar
+        prof_bar = tk.Frame(
+            self,
+            bg=COLOR_SURFACE,
+            highlightbackground=COLOR_BORDER,
+            highlightthickness=1,
+            padx=10,
+            pady=6
+        )
+        prof_bar.pack(fill=tk.X, padx=12, pady=(0, 6))
+
+        tk.Label(
+            prof_bar,
+            text="PROFILE:",
+            bg=COLOR_SURFACE,
+            fg=COLOR_TEXT_WHITE,
+            font=FONT_BODY_BOLD
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        self.profile_var = tk.StringVar(value=self.gamepad_mgr.get_active_profile_name())
+        self.cb_profiles = ttk.Combobox(
+            prof_bar,
+            textvariable=self.profile_var,
+            values=self.gamepad_mgr.get_profile_names(),
+            state="readonly",
+            width=18
+        )
+        self.cb_profiles.pack(side=tk.LEFT, padx=(0, 8))
+        self.cb_profiles.bind("<<ComboboxSelected>>", self._on_profile_selected)
+
+        ttk.Button(
+            prof_bar,
+            text="+ NEW",
+            style="Invert.TButton",
+            width=6,
+            command=self._create_new_profile
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            prof_bar,
+            text="SAVE",
+            style="Retro.TButton",
+            width=6,
+            command=self._save_active_profile
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            prof_bar,
+            text="DELETE",
+            style="Retro.TButton",
+            width=7,
+            command=self._delete_active_profile
+        ).pack(side=tk.LEFT, padx=2)
+
+        # Hardware mapping preset dropdown (XBOX_BT, PLAYSTATION, GENERIC_DINPUT)
+        tk.Label(
+            prof_bar,
+            text="DEVICE MAP:",
+            bg=COLOR_SURFACE,
+            fg=COLOR_TEXT_DIM,
+            font=FONT_SMALL
+        ).pack(side=tk.LEFT, padx=(12, 4))
+
+        self.wireless_var = tk.StringVar(value=self.gamepad_mgr.state.wireless_profile)
+        self.cb_wireless = ttk.Combobox(
+            prof_bar,
+            textvariable=self.wireless_var,
+            values=list(WIRELESS_PROFILES.keys()),
+            state="readonly",
+            width=15
+        )
+        self.cb_wireless.pack(side=tk.LEFT, padx=(0, 8))
+        self.cb_wireless.bind("<<ComboboxSelected>>", self._on_wireless_profile_changed)
+
+        self.lbl_profile_status = tk.Label(
+            prof_bar,
+            text=f"[ Profile: {self.gamepad_mgr.get_active_profile_name()} loaded ]",
+            bg=COLOR_SURFACE,
+            fg=COLOR_TEXT_DIM,
+            font=FONT_SMALL
+        )
+        self.lbl_profile_status.pack(side=tk.RIGHT, padx=6)
+
+        # 3. Bottom Section: Split Columns (Calibration & Mapping)
         bot_split = tk.Frame(self, bg=COLOR_BG)
-        bot_split.pack(fill=tk.BOTH, expand=True, padx=12, pady=(4, 10))
+        bot_split.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 10))
 
         # Left: Stick Calibration & Tuning Card
         cal_card = RetroCard(bot_split, title="Stick & Trigger Calibration")
@@ -516,9 +600,62 @@ class ControllerView(tk.Frame):
         self.lbl_expo_val.config(text=f"{pct}%")
         self.gamepad_mgr.set_expo(pct / 100.0)
 
-    def _save_config(self):
+    def _sync_controls_from_manager(self):
+        """Update all UI controls from current gamepad_mgr state."""
+        self.profile_var.set(self.gamepad_mgr.get_active_profile_name())
+        self.cb_profiles["values"] = self.gamepad_mgr.get_profile_names()
+        self.wireless_var.set(self.gamepad_mgr.state.wireless_profile)
+        self.deadzone_var.set(self.gamepad_mgr.state.deadzone_pct * 100)
+        self.lbl_dz_val.config(text=f"{int(self.gamepad_mgr.state.deadzone_pct * 100)}%")
+        self.expo_var.set(self.gamepad_mgr.state.expo * 100)
+        self.lbl_expo_val.config(text=f"{int(self.gamepad_mgr.state.expo * 100)}%")
+        self.inv_lx_var.set(self.gamepad_mgr.state.invert_lx)
+        self.inv_ly_var.set(self.gamepad_mgr.state.invert_ly)
+        self.inv_rx_var.set(self.gamepad_mgr.state.invert_rx)
+        self.inv_ry_var.set(self.gamepad_mgr.state.invert_ry)
+        self._refresh_mapping_tree()
+        self.overlay.redraw()
+
+    def _on_profile_selected(self, event=None):
+        name = self.profile_var.get()
+        if self.gamepad_mgr.set_active_profile(name, notify=False):
+            self._sync_controls_from_manager()
+            self.lbl_profile_status.config(text=f"[ Loaded: {name} ]", fg="#00ff88")
+
+    def _create_new_profile(self):
+        from tkinter import simpledialog
+        name = simpledialog.askstring("New Gamepad Profile", "Enter profile name (e.g. DualShock4, XboxOne):", parent=self)
+        if name:
+            clean = name.strip()
+            if clean:
+                self.gamepad_mgr.create_profile(clean, copy_from_active=True)
+                self._sync_controls_from_manager()
+                self.lbl_profile_status.config(text=f"[ Created: {clean} ]", fg="#00ff88")
+
+    def _save_active_profile(self):
         self.gamepad_mgr.save_config()
-        messagebox.showinfo("Configuration Saved", "Gamepad calibration and mappings saved to gamepad_config.json")
+        curr_name = self.gamepad_mgr.get_active_profile_name()
+        self.lbl_profile_status.config(text=f"[ Saved: {curr_name} ]", fg="#00ff88")
+        messagebox.showinfo("Profile Saved", f"Profile '{curr_name}' saved to gamepad_config.json")
+
+    def _delete_active_profile(self):
+        curr = self.gamepad_mgr.get_active_profile_name()
+        if len(self.gamepad_mgr.get_profile_names()) <= 1:
+            messagebox.showwarning("Cannot Delete", "At least one profile must be retained.")
+            return
+        if messagebox.askyesno("Confirm Delete", f"Delete gamepad profile '{curr}'?"):
+            self.gamepad_mgr.delete_profile(curr)
+            self._sync_controls_from_manager()
+            self.lbl_profile_status.config(text=f"[ Deleted: {curr} ]", fg=COLOR_TEXT_DIM)
+
+    def _on_wireless_profile_changed(self, event=None):
+        w_prof = self.wireless_var.get()
+        self.gamepad_mgr.set_wireless_profile(w_prof)
+        self.overlay.redraw()
+        self.lbl_profile_status.config(text=f"[ Device Map: {w_prof} ]", fg="#00ff88")
+
+    def _save_config(self):
+        self._save_active_profile()
 
     def update_gamepad_telemetry(self, state_dict: Dict[str, Any]):
         """Update live visualizer and transmit MANUAL_CONTROL if enabled."""
@@ -547,13 +684,15 @@ class ControllerView(tk.Frame):
 
         if self.streaming_enabled.get() and state_dict.get("connected", False) and self.mav_mgr.is_connected():
             cmds = self.matrix_mgr.extract_gamepad_commands(state_dict)
-            fwd = cmds["fwd"]
-            lat = cmds["lat"]
-            throttle = cmds["depth"]
-            yaw = cmds["yaw"]
             buttons = state_dict.get("buttons_bitmask", 0)
 
-            self.mav_mgr.send_manual_control(x=fwd, y=lat, z=throttle, r=yaw, buttons=buttons)
+            self.mav_mgr.send_manual_control(
+                x=cmds.get("mav_fwd", cmds["fwd"]),
+                y=cmds.get("mav_lat", cmds["lat"]),
+                z=cmds.get("mav_depth", cmds["depth"]),
+                r=cmds.get("mav_yaw", cmds["yaw"]),
+                buttons=buttons
+            )
 
     def _open_motor_matrix_dialog(self):
         """Open graphical motor allocation matrix and stick configuration dialog."""

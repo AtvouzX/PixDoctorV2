@@ -50,17 +50,28 @@ class AutoDetector:
             self.status_callback(msg, level)
 
     def _probe_ping_check(self, port_str: str) -> bool:
-        """Quick 200ms ping to determine if an ambiguous USB port is running PixDoctor probe firmware."""
+        """Quick 150ms ping to determine if an ambiguous USB port is running PixDoctor probe firmware."""
+        active_mav = (self.mav_mgr.state.port or "").upper().split(" ")[0].strip()
+        if self.mav_mgr.is_connected() and active_mav and (port_str.upper() == active_mav or active_mav in port_str.upper()):
+            return False
+
+        s = None
         try:
             import serial
-            with serial.Serial(port_str, 115200, timeout=0.25, write_timeout=0.25) as s:
-                s.write(b"PING\n")
-                time.sleep(0.05)
-                res = s.read(256).decode("utf-8", errors="ignore")
-                if any(k in res for k in ("PROBE", "PONG", "PixDoctor", "pwm")):
-                    return True
+            s = serial.Serial(port_str, 115200, timeout=0.15, write_timeout=0.2)
+            s.write(b"PING\n")
+            time.sleep(0.04)
+            res = s.read(128).decode("utf-8", errors="ignore")
+            if any(k in res for k in ("PROBE", "PONG", "PixDoctor", "pwm")):
+                return True
         except Exception:
             pass
+        finally:
+            if s is not None and getattr(s, "is_open", False):
+                try:
+                    s.close()
+                except Exception:
+                    pass
         return False
 
     def _scan_loop(self):
@@ -69,6 +80,14 @@ class AutoDetector:
 
         while self.running:
             try:
+                # If both Pixhawk and Probe are already connected, do not probe ports
+                if self.mav_mgr.is_connected() and self.nano_mgr.state.connected:
+                    time.sleep(2.0)
+                    continue
+
+                active_mav = (self.mav_mgr.state.port or "").upper().split(" ")[0].strip()
+                active_nano = (self.nano_mgr.state.port or "").upper().split(" ")[0].strip()
+
                 ports = serial.tools.list_ports.comports()
                 pixhawk_candidate = None
                 probe_candidate = None
@@ -78,6 +97,7 @@ class AutoDetector:
                     desc_upper = (p.description or "").upper()
                     hwid_upper = (p.hwid or "").upper()
                     dev = p.device
+                    dev_upper = dev.upper()
                     vid = p.vid
                     pid = p.pid
 
@@ -85,27 +105,29 @@ class AutoDetector:
                     if "BTHENUM" in hwid_upper or "BLUETOOTH" in desc_upper:
                         continue
 
-                    # Skip ports already connected
-                    if self.mav_mgr.is_connected() and dev == self._pixhawk_connected_port:
+                    # Strictly skip ports already in use by active connections
+                    if self.mav_mgr.is_connected() and active_mav and (dev_upper == active_mav or active_mav in dev_upper):
                         continue
-                    if self.nano_mgr.state.connected and dev == self._nano_connected_port:
+                    if self.nano_mgr.state.connected and active_nano and (dev_upper == active_nano or active_nano in dev_upper):
                         continue
 
                     # 1. Definitive Probe: Nano 33 IoT (2341:8057), Espressif Native (303A), or keyword
-                    if (vid == 0x2341 and pid == 0x8057) or vid == 0x303A:
-                        probe_candidate = dev
-                        continue
-                    elif any(tag in desc_upper for tag in ("NANO 33", "SAMD21", "ARDUINO NANO", "PIXDOCTOR", "ESP32", "ESPRESSIF")):
-                        probe_candidate = dev
-                        continue
+                    if not self.nano_mgr.state.connected:
+                        if (vid == 0x2341 and pid == 0x8057) or vid == 0x303A:
+                            probe_candidate = dev
+                            continue
+                        elif any(tag in desc_upper for tag in ("NANO 33", "SAMD21", "ARDUINO NANO", "PIXDOCTOR", "ESP32", "ESPRESSIF")):
+                            probe_candidate = dev
+                            continue
 
                     # 2. Definitive Pixhawk: STM32 FMUv2 (0483:5740), 3DR PX4 (26AC:0011), or keywords
-                    if (vid == 0x0483 and pid == 0x5740) or (vid == 0x26AC and pid == 0x0011):
-                        pixhawk_candidate = dev
-                        continue
-                    elif any(tag in desc_upper for tag in ("PIXHAWK", "PX4", "ARDUPILOT", "STM32", "PROFICNC", "HEX")):
-                        pixhawk_candidate = dev
-                        continue
+                    if not self.mav_mgr.is_connected():
+                        if (vid == 0x0483 and pid == 0x5740) or (vid == 0x26AC and pid == 0x0011):
+                            pixhawk_candidate = dev
+                            continue
+                        elif any(tag in desc_upper for tag in ("PIXHAWK", "PX4", "ARDUPILOT", "STM32", "PROFICNC", "HEX")):
+                            pixhawk_candidate = dev
+                            continue
 
                     # 3. Ambiguous USB-to-UART bridges (CP210x, CH340, FTDI, generic USB Serial)
                     if (vid == 0x10C4 and pid == 0xEA60) or (vid == 0x1A86 and pid == 0x7523) or (vid == 0x0403 and pid == 0x6001):
@@ -115,7 +137,7 @@ class AutoDetector:
                     elif hwid_upper.startswith("USB"):
                         ambiguous_ports.append(dev)
 
-                # Resolve ambiguous ports if needed
+                # Resolve ambiguous ports only if a device is still missing
                 for amb_dev in ambiguous_ports:
                     if amb_dev == pixhawk_candidate or amb_dev == probe_candidate:
                         continue
@@ -152,7 +174,7 @@ class AutoDetector:
                         self._nano_connected_port = probe_candidate
                         self._notify(f"[Auto-Detect] Hardware probe connected on {probe_candidate}", "INFO")
 
-            except Exception as e:
+            except Exception:
                 pass
 
             time.sleep(2.0)

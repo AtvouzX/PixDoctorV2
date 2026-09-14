@@ -11,7 +11,7 @@ import time
 import json
 import ctypes
 import threading
-from typing import Dict, Any, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable
 
 # ==================== XINPUT DEFINITIONS ====================
 class XINPUT_GAMEPAD(ctypes.Structure):
@@ -237,7 +237,11 @@ class GamepadManager:
     3. Live Calibration, Zero-Tare Offset, Exponential Smoothing, and Button Remapping
     """
 
-    def __init__(self, action_callback: Optional[Callable[[str, Any], None]] = None):
+    def __init__(
+        self,
+        action_callback: Optional[Callable[[str, Any], None]] = None,
+        config_file: Optional[str] = None
+    ):
         self.state = GamepadState()
         self.action_callback = action_callback
         self.running: bool = False
@@ -262,8 +266,14 @@ class GamepadManager:
         # Previous button states for edge detection
         self._prev_buttons: Dict[str, bool] = {}
 
+        # Multi-profile holders
+        self.profiles: Dict[str, Dict[str, Any]] = {}
+        self.active_profile_name: str = "Default"
+        self._profile_callbacks: List[Callable[[str], None]] = []
+
         # Config file path for persistent settings
-        self._config_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gamepad_config.json")
+        default_cfg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gamepad_config.json")
+        self._config_file = config_file or default_cfg
         self.load_config()
 
     def start(self):
@@ -350,54 +360,188 @@ class GamepadManager:
             self.state.button_mappings = dict(DEFAULT_BUTTON_MAPPINGS)
         self.save_config()
 
+    def register_profile_callback(self, cb: Callable[[str], None]):
+        if cb not in self._profile_callbacks:
+            self._profile_callbacks.append(cb)
+
+    def unregister_profile_callback(self, cb: Callable[[str], None]):
+        if cb in self._profile_callbacks:
+            self._profile_callbacks.remove(cb)
+
+    def _notify_profile_changed(self):
+        for cb in self._profile_callbacks:
+            try:
+                cb(self.active_profile_name)
+            except Exception:
+                pass
+
+    def get_profile_names(self) -> List[str]:
+        with self.state.lock:
+            return list(self.profiles.keys()) if self.profiles else ["Default"]
+
+    def get_active_profile_name(self) -> str:
+        with self.state.lock:
+            return self.active_profile_name
+
+    def _export_current_state_to_dict(self) -> Dict[str, Any]:
+        """Convert current self.state into a profile dictionary."""
+        return {
+            "wireless_profile": self.state.wireless_profile,
+            "gain": round(float(self.state.gain), 2),
+            "deadzone_pct": round(float(self.state.deadzone_pct), 2),
+            "expo": round(float(self.state.expo), 2),
+            "invert_lx": bool(self.state.invert_lx),
+            "invert_ly": bool(self.state.invert_ly),
+            "invert_rx": bool(self.state.invert_rx),
+            "invert_ry": bool(self.state.invert_ry),
+            "center_offset_lx": int(self.state.center_offset_lx),
+            "center_offset_ly": int(self.state.center_offset_ly),
+            "center_offset_rx": int(self.state.center_offset_rx),
+            "center_offset_ry": int(self.state.center_offset_ry),
+            "button_mappings": dict(self.state.button_mappings),
+        }
+
+    def _apply_dict_to_state(self, p_data: Dict[str, Any]):
+        """Apply a profile dictionary into self.state."""
+        self.state.wireless_profile = p_data.get("wireless_profile", "PLAYSTATION")
+        self.state.gain = float(p_data.get("gain", 0.50))
+        self.state.deadzone_pct = float(p_data.get("deadzone_pct", 0.10))
+        self.state.expo = float(p_data.get("expo", 0.0))
+        self.state.invert_lx = bool(p_data.get("invert_lx", False))
+        self.state.invert_ly = bool(p_data.get("invert_ly", False))
+        self.state.invert_rx = bool(p_data.get("invert_rx", False))
+        self.state.invert_ry = bool(p_data.get("invert_ry", False))
+        self.state.center_offset_lx = int(p_data.get("center_offset_lx", 0))
+        self.state.center_offset_ly = int(p_data.get("center_offset_ly", 0))
+        self.state.center_offset_rx = int(p_data.get("center_offset_rx", 0))
+        self.state.center_offset_ry = int(p_data.get("center_offset_ry", 0))
+        loaded_map = p_data.get("button_mappings", {})
+        for k, v in loaded_map.items():
+            if k in self.state.button_mappings:
+                self.state.button_mappings[k] = v
+
+    def set_active_profile(self, profile_name: str, notify: bool = True) -> bool:
+        """Switch active profile, load its values into state, and persist active selection."""
+        with self.state.lock:
+            if profile_name not in self.profiles:
+                return False
+            self.active_profile_name = profile_name
+            self._apply_dict_to_state(self.profiles[profile_name])
+        self.save_config()
+        if notify:
+            self._notify_profile_changed()
+        return True
+
+    def create_profile(self, profile_name: str, copy_from_active: bool = True) -> bool:
+        """Create a new profile, make it active, and save."""
+        clean_name = profile_name.strip()
+        if not clean_name:
+            return False
+        with self.state.lock:
+            if copy_from_active:
+                self.profiles[clean_name] = self._export_current_state_to_dict()
+            else:
+                self.profiles[clean_name] = {
+                    "wireless_profile": "PLAYSTATION",
+                    "gain": 0.50,
+                    "deadzone_pct": 0.10,
+                    "expo": 0.0,
+                    "invert_lx": False,
+                    "invert_ly": False,
+                    "invert_rx": False,
+                    "invert_ry": False,
+                    "center_offset_lx": 0,
+                    "center_offset_ly": 0,
+                    "center_offset_rx": 0,
+                    "center_offset_ry": 0,
+                    "button_mappings": dict(DEFAULT_BUTTON_MAPPINGS),
+                }
+            self.active_profile_name = clean_name
+        self.save_config()
+        self._notify_profile_changed()
+        return True
+
+    def delete_profile(self, profile_name: str) -> bool:
+        """Delete profile (cannot delete if it is the only profile)."""
+        with self.state.lock:
+            if len(self.profiles) <= 1:
+                return False
+            if profile_name not in self.profiles:
+                return False
+            del self.profiles[profile_name]
+            if self.active_profile_name == profile_name:
+                self.active_profile_name = list(self.profiles.keys())[0]
+                self._apply_dict_to_state(self.profiles[self.active_profile_name])
+        self.save_config()
+        self._notify_profile_changed()
+        return True
+
     def save_config(self):
-        """Persist calibration & button mappings to JSON file."""
+        """Persist multi-profile calibration & button mappings to JSON file."""
         try:
             with self.state.lock:
+                # Update current active profile in dict
+                if not self.profiles:
+                    self.profiles = {"Default": self._export_current_state_to_dict()}
+                    self.active_profile_name = "Default"
+                else:
+                    self.profiles[self.active_profile_name] = self._export_current_state_to_dict()
+
                 data = {
-                    "wireless_profile": self.state.wireless_profile,
-                    "gain": self.state.gain,
-                    "deadzone_pct": self.state.deadzone_pct,
-                    "expo": self.state.expo,
-                    "invert_lx": self.state.invert_lx,
-                    "invert_ly": self.state.invert_ly,
-                    "invert_rx": self.state.invert_rx,
-                    "invert_ry": self.state.invert_ry,
-                    "center_offset_lx": self.state.center_offset_lx,
-                    "center_offset_ly": self.state.center_offset_ly,
-                    "center_offset_rx": self.state.center_offset_rx,
-                    "center_offset_ry": self.state.center_offset_ry,
-                    "button_mappings": self.state.button_mappings,
+                    "active_profile": self.active_profile_name,
+                    "profiles": self.profiles
                 }
-            with open(self._config_file, "w") as f:
+            with open(self._config_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
         except Exception:
             pass
 
     def load_config(self):
-        """Load calibration & button mappings from JSON file if available."""
+        """Load multi-profile calibration & mappings from JSON file if available."""
         if not os.path.exists(self._config_file):
+            with self.state.lock:
+                self.profiles = {"Default": self._export_current_state_to_dict()}
+                self.active_profile_name = "Default"
+            self.save_config()
             return
         try:
-            with open(self._config_file, "r") as f:
+            with open(self._config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
+
             with self.state.lock:
-                self.state.wireless_profile = data.get("wireless_profile", "XBOX_BT")
-                self.state.gain = float(data.get("gain", 0.50))
-                self.state.deadzone_pct = float(data.get("deadzone_pct", 0.10))
-                self.state.expo = float(data.get("expo", 0.0))
-                self.state.invert_lx = bool(data.get("invert_lx", False))
-                self.state.invert_ly = bool(data.get("invert_ly", False))
-                self.state.invert_rx = bool(data.get("invert_rx", False))
-                self.state.invert_ry = bool(data.get("invert_ry", False))
-                self.state.center_offset_lx = int(data.get("center_offset_lx", 0))
-                self.state.center_offset_ly = int(data.get("center_offset_ly", 0))
-                self.state.center_offset_rx = int(data.get("center_offset_rx", 0))
-                self.state.center_offset_ry = int(data.get("center_offset_ry", 0))
-                loaded_map = data.get("button_mappings", {})
-                for k, v in loaded_map.items():
-                    if k in self.state.button_mappings:
-                        self.state.button_mappings[k] = v
+                if "profiles" in data and isinstance(data["profiles"], dict) and data["profiles"]:
+                    # Modern Multi-Profile Format
+                    self.profiles = data["profiles"]
+                    act = data.get("active_profile", "")
+                    if act in self.profiles:
+                        self.active_profile_name = act
+                    else:
+                        self.active_profile_name = list(self.profiles.keys())[0]
+                else:
+                    # Legacy Flat Single-Profile Format -> Migrate seamlessly
+                    single_prof = {
+                        "wireless_profile": data.get("wireless_profile", "PLAYSTATION"),
+                        "gain": float(data.get("gain", 0.50)),
+                        "deadzone_pct": float(data.get("deadzone_pct", 0.10)),
+                        "expo": float(data.get("expo", 0.0)),
+                        "invert_lx": bool(data.get("invert_lx", False)),
+                        "invert_ly": bool(data.get("invert_ly", False)),
+                        "invert_rx": bool(data.get("invert_rx", False)),
+                        "invert_ry": bool(data.get("invert_ry", False)),
+                        "center_offset_lx": int(data.get("center_offset_lx", 0)),
+                        "center_offset_ly": int(data.get("center_offset_ly", 0)),
+                        "center_offset_rx": int(data.get("center_offset_rx", 0)),
+                        "center_offset_ry": int(data.get("center_offset_ry", 0)),
+                        "button_mappings": data.get("button_mappings", dict(DEFAULT_BUTTON_MAPPINGS)),
+                    }
+                    self.profiles = {"Default": single_prof}
+                    self.active_profile_name = "Default"
+
+                self._apply_dict_to_state(self.profiles[self.active_profile_name])
+
+            # Re-save in new multi-profile format if it was legacy
+            if "profiles" not in data:
+                self.save_config()
         except Exception:
             pass
 

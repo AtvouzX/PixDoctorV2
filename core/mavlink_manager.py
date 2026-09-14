@@ -601,6 +601,15 @@ class MavlinkManager:
                         pass
 
                 if not msg:
+                    # Check if port died in pymavlink
+                    if self.mav_conn and getattr(self.mav_conn, "dead", False):
+                        with self.state.lock:
+                            if self.state.connected:
+                                self.state.connected = False
+                                self.log("[MAVLink] Serial port connection died", "WARN")
+                        time.sleep(0.5)
+                        continue
+
                     # Check heartbeat timeout
                     if now - self.state.last_heartbeat_time > self.state.heartbeat_timeout:
                         with self.state.lock:

@@ -49,6 +49,7 @@ class SummaryView(tk.Frame):
         self.param_mgr = param_mgr
         self.nano_mgr = nano_mgr
         self.matrix_mgr = MotorMatrixManager.get_instance()
+        self.matrix_mgr.register_callback(self._on_matrix_updated)
 
         self._build_ui()
 
@@ -61,10 +62,10 @@ class SummaryView(tk.Frame):
         bottom_bar = tk.Frame(self, bg=COLOR_SURFACE, padx=12, pady=6, highlightbackground=COLOR_BORDER, highlightthickness=1)
         bottom_bar.pack(fill=tk.X, side=tk.BOTTOM)
 
-        # Left: Arm / Disarm Action
+        # Left: Arm / Disarm Action (Operational Flight)
         self.btn_arm = ttk.Button(
             bottom_bar,
-            text="[ ARM VEHICLE ]",
+            text="[ ARM FC (OPERATIONAL FLIGHT) ]",
             style="Invert.TButton",
             command=self._toggle_arm
         )
@@ -115,7 +116,16 @@ class SummaryView(tk.Frame):
             style="Invert.TButton",
             command=self._open_motor_matrix_dialog
         )
-        btn_matrix.pack(side=tk.LEFT, padx=(0, 16))
+        btn_matrix.pack(side=tk.LEFT, padx=(0, 10))
+
+        # HUD / Telemetry-Only Mode Toggle
+        self.btn_hud_mode = ttk.Button(
+            bottom_bar,
+            text="[ HUD: ON ]",
+            style="Retro.TButton",
+            command=self._toggle_hud_mode
+        )
+        self.btn_hud_mode.pack(side=tk.LEFT, padx=(0, 16))
 
         # Right: Live Pixhawk Status Message Strip
         self.lbl_status_strip = tk.Label(
@@ -132,11 +142,11 @@ class SummaryView(tk.Frame):
         curr_armed = self.mav_mgr.state.armed
         if not curr_armed:
             if messagebox.askyesno(
-                "Confirm Arming",
-                "WARNING: Pixhawk motors will be energized!\n\nEnsure thrusters are clear of personnel and tether before arming.\n\nProceed to ARM?",
+                "Confirm Operational Arming",
+                "OPERATIONAL FLIGHT ARMING:\nPixhawk flight stabilization and thrusters will be energized with full pre-arm safety checks.\n\nEnsure ROV is in water or safely cleared of all personnel and tether.\n\nProceed to ARM for Operational Flight?",
                 icon="warning"
             ):
-                self.mav_mgr.arm(True)
+                self.mav_mgr.arm(True, force=False)
                 self.mav_mgr.set_safety_switch(True)
                 self.mav_mgr.set_flight_mode(19)
                 self.mav_mgr.send_manual_control(0, 0, 0, 0, 0)
@@ -172,6 +182,15 @@ class SummaryView(tk.Frame):
             gamepad_mgr=self.gamepad_mgr
         )
 
+    def _toggle_hud_mode(self):
+        """Toggle between full jet HUD graphics and pure digital telemetry mode."""
+        new_mode = not self.hud.show_hud_graphics
+        self.hud.set_hud_graphics_mode(new_mode)
+        if new_mode:
+            self.btn_hud_mode.config(text="[ HUD: ON ]")
+        else:
+            self.btn_hud_mode.config(text="[ HUD: OFF (TELEM) ]")
+
     def update_telemetry(
         self,
         mav_snap: Dict[str, Any],
@@ -193,12 +212,14 @@ class SummaryView(tk.Frame):
         if mav_snap.get("armed", False) and self.mav_mgr.is_connected():
             if pad_snap and pad_snap.get("connected", False):
                 cmds = self.matrix_mgr.extract_gamepad_commands(pad_snap)
-                fwd = cmds["fwd"]
-                lat = cmds["lat"]
-                throttle = cmds["depth"]
-                yaw = cmds["yaw"]
                 buttons = pad_snap.get("buttons_bitmask", 0)
-                self.mav_mgr.send_manual_control(x=fwd, y=lat, z=throttle, r=yaw, buttons=buttons)
+                self.mav_mgr.send_manual_control(
+                    x=cmds.get("mav_fwd", cmds["fwd"]),
+                    y=cmds.get("mav_lat", cmds["lat"]),
+                    z=cmds.get("mav_depth", cmds["depth"]),
+                    r=cmds.get("mav_yaw", cmds["yaw"]),
+                    buttons=buttons
+                )
             else:
                 self.mav_mgr.send_manual_control(0, 0, 0, 0, 0)
 
@@ -215,8 +236,14 @@ class SummaryView(tk.Frame):
         if armed:
             self.btn_arm.config(text="[ DISARM VEHICLE ]", style="Retro.TButton")
         else:
-            self.btn_arm.config(text="[ ARM VEHICLE ]", style="Invert.TButton")
+            self.btn_arm.config(text="[ ARM FC (OPERATIONAL FLIGHT) ]", style="Invert.TButton")
 
         # Sync Status message strip
         st = mav_snap.get("statustext", "Standby")
         self.lbl_status_strip.config(text=f"[ SYS ]: {st}")
+
+    def _on_matrix_updated(self):
+        """Callback triggered when motor matrix, stick mode, or frame changes."""
+        new_fid = self.matrix_mgr.get_current_frame_id()
+        if hasattr(self, "hud"):
+            self.hud.set_frame_id(new_fid)

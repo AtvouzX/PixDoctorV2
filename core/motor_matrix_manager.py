@@ -118,6 +118,7 @@ class MotorMatrixManager:
     def __init__(self):
         self.lock = threading.RLock()
         self.active_preset_name: str = "SimpleROV-4"
+        self.frame_id: int = 6
         self.stick_mode_key: str = "STANDARD_ROV"
 
         # Motor directions (1 = Normal, -1 = Reversed)
@@ -139,11 +140,22 @@ class MotorMatrixManager:
             "yaw": "axis_lx",
         }
 
-        self._callbacks: List[Callable[[], None]] = []
+        self._callbacks: List[Callable[[str], None]] = []
 
         # Load default SimpleROV-4
         self.apply_preset("SimpleROV-4", notify=False)
         self.load_from_file()
+
+    def get_current_frame_id(self) -> int:
+        with self.lock:
+            return self.frame_id
+
+    def set_frame_id(self, frame_id: int, notify: bool = True):
+        with self.lock:
+            self.frame_id = int(frame_id)
+        if notify:
+            self.save_to_file()
+            self._notify()
 
     def register_callback(self, cb: Callable[[], None]):
         if cb not in self._callbacks:
@@ -167,6 +179,7 @@ class MotorMatrixManager:
 
         with self.lock:
             self.active_preset_name = preset_name
+            self.frame_id = preset.get("frame_id", 6)
             self.motor_directions = dict(preset["motor_directions"])
             self.matrix = {
                 axis: dict(weights)
@@ -195,13 +208,13 @@ class MotorMatrixManager:
             self.save_to_file()
             self._notify()
 
-    def swap_turning_stick(self):
+    def swap_turning_stick(self, notify: bool = True):
         """Quick 1-click toggle between Left Stick Turning and Right Stick Turning."""
         with self.lock:
             if self.axis_mappings.get("yaw") == "axis_rx":
-                self.set_stick_mode("STANDARD_ROV")
+                self.set_stick_mode("STANDARD_ROV", notify=notify)
             else:
-                self.set_stick_mode("FPS_CAR")
+                self.set_stick_mode("FPS_CAR", notify=notify)
 
     def invert_yaw_differential(self, notify: bool = True):
         """
@@ -241,6 +254,7 @@ class MotorMatrixManager:
         with self.lock:
             return {
                 "active_preset": self.active_preset_name,
+                "frame_id": self.frame_id,
                 "stick_mode": self.stick_mode_key,
                 "motor_directions": dict(self.motor_directions),
                 "matrix": {
@@ -290,12 +304,71 @@ class MotorMatrixManager:
 
         return pwms
 
+    def get_axis_polarities(self) -> Dict[str, float]:
+        """
+        Returns the flight control polarities for (fwd, lat, depth, yaw)
+        based on active allocation matrix relative to standard ArduSub frame definitions.
+        Ensures that flipping an axis differential in the matrix configuration properly
+        instructs ArduSub via MANUAL_CONTROL.
+        """
+        with self.lock:
+            # 1. Forward polarity: Motor 1 is typically positive for forward thrust
+            fwd_row = self.matrix.get("fwd", {})
+            fwd_pol = 1.0
+            for i in range(1, 9):
+                if abs(fwd_row.get(i, 0.0)) > 0.01:
+                    fwd_pol = 1.0 if fwd_row.get(i, 0.0) > 0 else -1.0
+                    break
+
+            # 2. Lateral polarity
+            lat_row = self.matrix.get("lat", {})
+            lat_pol = 1.0
+            for i in range(1, 9):
+                if abs(lat_row.get(i, 0.0)) > 0.01:
+                    lat_pol = 1.0 if lat_row.get(i, 0.0) > 0 else -1.0
+                    break
+
+            # 3. Depth polarity: First active vertical thruster (e.g. M3) is positive
+            depth_row = self.matrix.get("depth", {})
+            depth_pol = 1.0
+            for i in range(1, 9):
+                if abs(depth_row.get(i, 0.0)) > 0.01:
+                    depth_pol = 1.0 if depth_row.get(i, 0.0) > 0 else -1.0
+                    break
+
+            # 4. Yaw polarity: Motor 1 is port horizontal (+1.0 in standard ArduSub frames)
+            # When M1 is negative (e.g. -1.0 in Inverted Yaw), yaw_pol is -1.0
+            yaw_row = self.matrix.get("yaw", {})
+            yaw_pol = 1.0
+            w1 = yaw_row.get(1, 0.0)
+            if abs(w1) > 0.01:
+                yaw_pol = 1.0 if w1 > 0 else -1.0
+            else:
+                for i in range(2, 9):
+                    if abs(yaw_row.get(i, 0.0)) > 0.01:
+                        # M2 is negative (-1.0) in standard SimpleROV-4
+                        yaw_pol = -1.0 if yaw_row.get(i, 0.0) > 0 else 1.0
+                        break
+
+            return {
+                "fwd": fwd_pol,
+                "lat": lat_pol,
+                "depth": depth_pol,
+                "yaw": yaw_pol
+            }
+
     def extract_gamepad_commands(self, pad_snap: Optional[Dict[str, Any]]) -> Dict[str, int]:
         """
         Extracts fwd, lat, depth, yaw commands from gamepad snapshot according to current stick mode.
+        Also returns mav_fwd, mav_lat, mav_depth, mav_yaw which incorporate matrix axis polarities
+        for streaming to ArduSub via MANUAL_CONTROL.
         """
+        polarities = self.get_axis_polarities()
         if not pad_snap or not pad_snap.get("connected", False):
-            return {"fwd": 0, "lat": 0, "depth": 0, "yaw": 0}
+            return {
+                "fwd": 0, "lat": 0, "depth": 0, "yaw": 0,
+                "mav_fwd": 0, "mav_lat": 0, "mav_depth": 0, "mav_yaw": 0
+            }
 
         gain = pad_snap.get("gain", 0.50)
         with self.lock:
@@ -309,12 +382,22 @@ class MotorMatrixManager:
         depth = int(pad_snap.get(depth_chan, 0) * gain) if depth_chan != "none" else 0
         yaw = int(pad_snap.get(yaw_chan, 0) * gain) if yaw_chan != "none" else 0
 
-        return {"fwd": fwd, "lat": lat, "depth": depth, "yaw": yaw}
+        return {
+            "fwd": fwd,
+            "lat": lat,
+            "depth": depth,
+            "yaw": yaw,
+            "mav_fwd": int(fwd * polarities["fwd"]),
+            "mav_lat": int(lat * polarities["lat"]),
+            "mav_depth": int(depth * polarities["depth"]),
+            "mav_yaw": int(yaw * polarities["yaw"]),
+        }
 
     def save_to_file(self, file_path: str = CONFIG_FILE) -> bool:
         with self.lock:
             data = {
                 "active_preset": self.active_preset_name,
+                "frame_id": self.frame_id,
                 "stick_mode": self.stick_mode_key,
                 "motor_directions": {str(k): v for k, v in self.motor_directions.items()},
                 "matrix": {
@@ -339,6 +422,11 @@ class MotorMatrixManager:
 
             with self.lock:
                 self.active_preset_name = data.get("active_preset", "SimpleROV-4")
+                # Infer frame_id from preset or explicit frame_id
+                preset_def = DEFAULT_PRESETS.get(self.active_preset_name, {})
+                default_fid = preset_def.get("frame_id", 6)
+                self.frame_id = int(data.get("frame_id", default_fid))
+
                 self.stick_mode_key = data.get("stick_mode", "STANDARD_ROV")
 
                 raw_dirs = data.get("motor_directions", {})
