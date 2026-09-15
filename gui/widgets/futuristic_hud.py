@@ -32,9 +32,11 @@ COLOR_TEXT_DIM = "#71717a"
 COLOR_TEXT_WHITE = "#ffffff"
 
 FONT_HUD_TITLE = ("Consolas", 12, "bold")
+FONT_HUD_MED = ("Consolas", 11, "bold")
 FONT_HUD_BOLD = ("Consolas", 10, "bold")
 FONT_HUD_REG = ("Consolas", 9, "normal")
 FONT_HUD_SMALL = ("Consolas", 8, "normal")
+FONT_HUD_TINY = ("Consolas", 7, "normal")
 FONT_HUD_LARGE = ("Consolas", 18, "bold")
 FONT_HUD_HUGE = ("Consolas", 24, "bold")
 
@@ -1000,224 +1002,653 @@ class FuturisticHud(tk.Canvas):
             else:
                 m_col = COLOR_WHITE
 
-            rev_label = " [REV]" if is_rev_motor else ""
-            self.create_text(lbl_x, ty - 5, text=f"M{num}{rev_label}:{cmd_pwm}", fill=m_col, font=FONT_HUD_SMALL, anchor=anchor)
-            if is_prb:
+            rev_label = "*" if is_rev_motor else ""
+            if is_prb and prb_pwm > 800:
                 p_col = COLOR_AMBER if abs(delta) > 25 else COLOR_GREEN
-                self.create_text(lbl_x, ty + 5, text=f"P:{prb_pwm}", fill=p_col, font=FONT_HUD_SMALL, anchor=anchor)
+                self.create_text(lbl_x, ty - 5, text=f"M{num}{rev_label}:{cmd_pwm}", fill=m_col, font=FONT_HUD_SMALL, anchor=anchor)
+                self.create_text(lbl_x, ty + 5, text=f"P:{prb_pwm}", fill=p_col, font=FONT_HUD_TINY, anchor=anchor)
             else:
-                self.create_text(lbl_x, ty + 5, text="P:--", fill=COLOR_DIM, font=FONT_HUD_SMALL, anchor=anchor)
+                self.create_text(lbl_x, ty, text=f"M{num}{rev_label}:{cmd_pwm}", fill=m_col, font=FONT_HUD_SMALL, anchor=anchor)
 
     def _draw_pure_telemetry_dashboard(self, w: float, h: float):
         """
-        Clean, high-visibility, lightweight digital telemetry dashboard.
-        Disables fighter jet HUD graphics (pitch ladder, waterline, particles, compass tape)
-        and renders a clean 3-panel avionics console with the 2D ROV thruster array monitor.
+        Military-grade, high-density digital telemetry console.
+        Eliminates empty black space and provides a dedicated Live Thrust Monitor,
+        2D ROV chassis visualizer, and closed-loop motor verification.
         """
-        # Outer subtle frame
-        self.create_rectangle(8, 8, w - 8, h - 8, outline=COLOR_BORDER_LIGHT, width=1)
+        # Outer border
+        self.create_rectangle(6, 6, w - 6, h - 6, outline=COLOR_BORDER_LIGHT, width=1)
 
-        # 1. Top Avionics Header Bar (Height: 38px)
-        top_y1, top_y2 = 12.0, 48.0
-        self.create_rectangle(14, top_y1, w - 14, top_y2, fill="#0b101b", outline=COLOR_BORDER_LIGHT)
+        # 1. Top Avionics Header Bar (Height: 34px)
+        top_y1, top_y2 = 10.0, 44.0
+        self._draw_telem_header(w, top_y1, top_y2)
 
-        # System Banner
-        self.create_text(
-            24, (top_y1 + top_y2) / 2.0,
-            text="PIXDOCTOR DIGITAL TELEMETRY DASHBOARD",
-            fill=COLOR_CYAN,
-            font=FONT_HUD_TITLE,
-            anchor="w"
-        )
+        # 2. Bottom Status Strip (Height: 20px)
+        bot_y1, bot_y2 = h - 26.0, h - 8.0
+        self._draw_telem_footer(w, bot_y1, bot_y2)
 
-        # Mode Badge
-        mode_str = f"MODE: {self.mode_name}"
-        self.create_rectangle(w * 0.44 - 55, top_y1 + 5, w * 0.44 + 55, top_y2 - 5, fill="#131e33", outline=COLOR_CYAN_DIM)
-        self.create_text(w * 0.44, (top_y1 + top_y2) / 2.0, text=mode_str, fill=COLOR_WHITE, font=FONT_HUD_BOLD)
+        # 3. Main Console 3-Column Layout
+        pan_y1 = 48.0
+        pan_y2 = h - 30.0
 
-        # Arm Status Badge
-        arm_col = COLOR_GREEN if self.armed else COLOR_RED
-        arm_text = "ARMED" if self.armed else "DISARMED"
-        arm_bg = "#0c2818" if self.armed else "#2a0f14"
-        self.create_rectangle(w * 0.58 - 48, top_y1 + 5, w * 0.58 + 48, top_y2 - 5, fill=arm_bg, outline=arm_col)
-        self.create_text(w * 0.58, (top_y1 + top_y2) / 2.0, text=arm_text, fill=arm_col, font=FONT_HUD_BOLD)
-
-        # Leak Status Badge
-        leak_col = COLOR_RED if self.leak_alert else COLOR_GREEN
-        leak_text = "LEAK ALERT!" if self.leak_alert else "LEAK: OK"
-        leak_bg = "#350c12" if self.leak_alert else "#0a1e14"
-        self.create_rectangle(w * 0.72 - 45, top_y1 + 5, w * 0.72 + 45, top_y2 - 5, fill=leak_bg, outline=leak_col)
-        self.create_text(w * 0.72, (top_y1 + top_y2) / 2.0, text=leak_text, fill=leak_col, font=FONT_HUD_BOLD)
-
-        # Link Rate
-        self.create_text(
-            w - 24, (top_y1 + top_y2) / 2.0,
-            text=f"RATE: {self.packet_rate:.0f} Hz",
-            fill=COLOR_DIM,
-            font=FONT_HUD_REG,
-            anchor="e"
-        )
-
-        # 2. Main Console Layout: 3 Columns
-        # Available vertical space: y=54 to h-34
-        pan_y1 = 54.0
-        pan_y2 = h - 34.0
-        pan_h = pan_y2 - pan_y1
-
-        # Column widths: Left 27%, Center 46%, Right 27%
-        col1_x1 = 14.0
-        col1_w = max(210.0, min(280.0, w * 0.27))
+        # Column widths: Left ~27%, Center ~46%, Right ~27%
+        col1_w = max(230.0, min(310.0, w * 0.27))
+        col3_w = col1_w
+        col1_x1 = 10.0
         col1_x2 = col1_x1 + col1_w
 
-        col3_w = col1_w
-        col3_x2 = w - 14.0
+        col3_x2 = w - 10.0
         col3_x1 = col3_x2 - col3_w
 
-        col2_x1 = col1_x2 + 10.0
-        col2_x2 = col3_x1 - 10.0
+        col2_x1 = col1_x2 + 8.0
+        col2_x2 = col3_x1 - 8.0
 
-        # ================= LEFT COLUMN: NAVIGATION & ENVIRONMENT =================
-        self.create_rectangle(col1_x1, pan_y1, col1_x2, pan_y2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
-        self.create_rectangle(col1_x1, pan_y1, col1_x2, pan_y1 + 22, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
-        self.create_text(col1_x1 + 10, pan_y1 + 11, text="[ NAVIGATION & ENVIRONMENT ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+        # Render Columns
+        self._draw_telem_nav_column(col1_x1, pan_y1, col1_x2, pan_y2)
+        self._draw_telem_center_column(col2_x1, pan_y1, col2_x2, pan_y2)
+        self._draw_telem_power_column(col3_x1, pan_y1, col3_x2, pan_y2)
 
-        cy = pan_y1 + 35
-        # Primary Depth Display (Massive digital readout)
-        self.create_text(col1_x1 + 12, cy, text="DEPTH", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
-        cy += 20
-        self.create_text(col1_x1 + 12, cy, text=f"{self.depth:.2f} m", fill=COLOR_CYAN, font=FONT_HUD_HUGE, anchor="w")
-        cy += 26
-        vs_col = COLOR_GREEN if abs(self.vert_speed) > 0.05 else COLOR_DIM
-        self.create_text(col1_x1 + 12, cy, text=f"VERT SPEED: {self.vert_speed:+.2f} m/s", fill=vs_col, font=FONT_HUD_REG, anchor="w")
-        cy += 18
-        self.create_text(col1_x1 + 12, cy, text=f"PRESSURE:   {self.pressure:.3f} bar", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
-        cy += 18
-        self.create_text(col1_x1 + 12, cy, text=f"TEMP:       {self.temp:.1f} °C", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+    def _draw_telem_header(self, w: float, top_y1: float, top_y2: float):
+        """Top avionics system header with dynamically positioned badges."""
+        self.create_rectangle(10, top_y1, w - 10, top_y2, fill="#0b101b", outline=COLOR_BORDER_LIGHT)
+        mid_y = (top_y1 + top_y2) / 2.0
 
-        # Divider
-        cy += 16
-        self.create_line(col1_x1 + 10, cy, col1_x2 - 10, cy, fill=COLOR_BORDER_LIGHT)
-        cy += 14
+        # Left: Branding
+        self.create_text(20, mid_y, text="PIXDOCTOR", fill=COLOR_CYAN, font=FONT_HUD_TITLE, anchor="w")
+        self.create_text(110, mid_y, text="// TELEMETRY CONSOLE", fill=COLOR_TEXT_DIM, font=FONT_HUD_BOLD, anchor="w")
 
-        # Attitude & Compass Section
-        self.create_text(col1_x1 + 12, cy, text="ATTITUDE & HEADING", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
-        cy += 20
+        # Right: Active Frame & MAVLink Rate
+        frame_name = self.matrix_mgr.get_frame_name(self.frame_id).upper()
+        frame_text = f"FRAME: {frame_name} [ID {self.frame_id}]"
+        self.create_text(w - 20, mid_y, text=frame_text, fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="e")
+
+        rate_text = f"MAVLINK: {self.packet_rate:.0f}Hz"
+        self.create_text(w - 20 - len(frame_text) * 8 - 24, mid_y, text=rate_text, fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="e")
+
+        # Center: System Status Badges
+        cx = w / 2.0
+        bw = 100.0
+        gap = 10.0
+        total_w = bw * 3 + gap * 2
+        start_x = cx - total_w / 2.0
+
+        # Mode Badge
+        m_x1 = start_x
+        m_x2 = m_x1 + bw
+        self.create_rectangle(m_x1, top_y1 + 4, m_x2, top_y2 - 4, fill="#131e33", outline=COLOR_CYAN_DIM)
+        self.create_text((m_x1 + m_x2) / 2.0, mid_y, text=f"MODE: {self.mode_name}", fill=COLOR_WHITE, font=FONT_HUD_SMALL)
+
+        # Arm Status Badge
+        a_x1 = m_x2 + gap
+        a_x2 = a_x1 + bw
+        arm_col = COLOR_GREEN if self.armed else COLOR_RED
+        arm_bg = "#0c2818" if self.armed else "#2a0f14"
+        arm_txt = "SYSTEM ARMED" if self.armed else "DISARMED (SAFE)"
+        self.create_rectangle(a_x1, top_y1 + 4, a_x2, top_y2 - 4, fill=arm_bg, outline=arm_col)
+        self.create_text((a_x1 + a_x2) / 2.0, mid_y, text=arm_txt, fill=arm_col, font=FONT_HUD_SMALL)
+
+        # Leak Badge
+        l_x1 = a_x2 + gap
+        l_x2 = l_x1 + bw
+        leak_col = COLOR_RED if self.leak_alert else COLOR_GREEN
+        leak_bg = "#350c12" if self.leak_alert else "#0a1e14"
+        leak_txt = "! LEAK ALERT !" if self.leak_alert else "HULL: NOMINAL"
+        self.create_rectangle(l_x1, top_y1 + 4, l_x2, top_y2 - 4, fill=leak_bg, outline=leak_col)
+        self.create_text((l_x1 + l_x2) / 2.0, mid_y, text=leak_txt, fill=leak_col, font=FONT_HUD_SMALL)
+
+    def _draw_telem_footer(self, w: float, bot_y1: float, bot_y2: float):
+        """Bottom telemetry status footer."""
+        self.create_rectangle(10, bot_y1, w - 10, bot_y2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
+        mid_y = (bot_y1 + bot_y2) / 2.0
+
+        st = self.statustext.strip() if self.statustext else "Standby. Operational Flight Control."
+        self.create_text(20, mid_y, text=f"[ SYS MSG ]: {st[:48]}", fill=COLOR_CYAN_DIM, font=FONT_HUD_SMALL, anchor="w")
+
+        stick_mode_str = getattr(self.matrix_mgr, "stick_mode_key", "Standard").upper()
+        pad_str = f"PILOT: {self.controller_name[:16]} | GAIN: {int(self.gain * 100)}% | STICK: {stick_mode_str}"
+        self.create_text(w / 2.0, mid_y, text=pad_str, fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="center")
+
+        self.create_text(w - 20, mid_y, text="[ TELEMETRY ACTIVE // HUD OFF ]", fill=COLOR_AMBER, font=FONT_HUD_SMALL, anchor="e")
+
+    def _draw_telem_nav_column(self, x1: float, y1: float, x2: float, y2: float):
+        """Left Column: Depth & Altimetry, Attitude & Heading, and Hull/Environment."""
+        w_col = x2 - x1
+        h_col = y2 - y1
+        c_gap = 6.0
+        card_h = (h_col - 2 * c_gap) / 3.0
+
+        # ================= CARD 1: DEPTH & ALTIMETRY =================
+        cy1, cy2 = y1, y1 + card_h
+        self.create_rectangle(x1, cy1, x2, cy2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
+        self.create_rectangle(x1, cy1, x2, cy1 + 20, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
+        self.create_text(x1 + 10, cy1 + 10, text="[ 01. DEPTH & ALTIMETRY ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+
+        iy = cy1 + 28
+        self.create_text(x1 + 12, iy, text="PRIMARY DEPTH", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
+        iy += 18
+        self.create_text(x1 + 12, iy, text=f"{self.depth:.2f} m", fill=COLOR_CYAN, font=FONT_HUD_HUGE, anchor="w")
+
+        iy += 26
+        if self.vert_speed < -0.05:
+            vs_col, v_badge = COLOR_GREEN, "▲ CLIMB"
+        elif self.vert_speed > 0.05:
+            vs_col, v_badge = COLOR_AMBER, "▼ DIVE"
+        else:
+            vs_col, v_badge = COLOR_DIM, "— LEVEL"
+
+        self.create_text(x1 + 12, iy, text=f"VERT SPD: {self.vert_speed:+.2f} m/s", fill=vs_col, font=FONT_HUD_REG, anchor="w")
+        self.create_text(x2 - 12, iy, text=v_badge, fill=vs_col, font=FONT_HUD_BOLD, anchor="e")
+
+        iy += 18
+        self.create_text(x1 + 12, iy, text=f"PRESSURE: {self.pressure:.3f} bar", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+        iy += 18
+        self.create_text(x1 + 12, iy, text="SURFACE TARE: 0.00m [OK]", fill=COLOR_CYAN_DIM, font=FONT_HUD_SMALL, anchor="w")
+
+        # Depth Mini Scale Bar
+        iy += 18
+        bar_x1 = x1 + 12
+        bar_x2 = x2 - 12
+        bar_w = bar_x2 - bar_x1
+        bar_y = iy + 2
+        self.create_rectangle(bar_x1, bar_y, bar_x2, bar_y + 8, outline=COLOR_BORDER_LIGHT, fill="#04060b")
+        d_pct = max(0.0, min(1.0, self.depth / 20.0))
+        fill_w = int(d_pct * bar_w)
+        if fill_w > 0:
+            self.create_rectangle(bar_x1 + 1, bar_y + 1, bar_x1 + fill_w, bar_y + 7, fill=COLOR_CYAN_DIM, outline="")
+        pip_x = bar_x1 + fill_w
+        self.create_line(pip_x, bar_y - 2, pip_x, bar_y + 10, fill=COLOR_CYAN, width=2)
+        self.create_text(bar_x1, bar_y + 16, text="0m", fill=COLOR_DIM, font=FONT_HUD_SMALL, anchor="w")
+        self.create_text((bar_x1 + bar_x2) / 2.0, bar_y + 16, text="10m", fill=COLOR_DIM, font=FONT_HUD_SMALL, anchor="center")
+        self.create_text(bar_x2, bar_y + 16, text="20m+", fill=COLOR_DIM, font=FONT_HUD_SMALL, anchor="e")
+
+        # ================= CARD 2: ATTITUDE & HEADING GYRO =================
+        cy1, cy2 = y1 + card_h + c_gap, y1 + 2 * card_h + c_gap
+        self.create_rectangle(x1, cy1, x2, cy2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
+        self.create_rectangle(x1, cy1, x2, cy1 + 20, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
+        self.create_text(x1 + 10, cy1 + 10, text="[ 02. ATTITUDE & HEADING ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+
+        iy = cy1 + 28
         cardinals = ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "N"]
         c_idx = int(((self.heading + 22.5) % 360) // 45)
         card_str = cardinals[c_idx]
-        self.create_text(col1_x1 + 12, cy, text=f"{int(self.heading):03d}° [{card_str}]", fill=COLOR_WHITE, font=FONT_HUD_LARGE, anchor="w")
-        cy += 24
-        self.create_text(col1_x1 + 12, cy, text=f"ROLL:  {self.roll:+.1f}°", fill=COLOR_CYAN, font=FONT_HUD_REG, anchor="w")
-        cy += 18
-        self.create_text(col1_x1 + 12, cy, text=f"PITCH: {self.pitch:+.1f}°", fill=COLOR_CYAN, font=FONT_HUD_REG, anchor="w")
+        self.create_text(x1 + 12, iy, text="HEADING GYRO", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
+        self.create_text(x2 - 12, iy, text=f"[{card_str}]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="e")
+        iy += 18
+        self.create_text(x1 + 12, iy, text=f"{int(self.heading):03d}°", fill=COLOR_WHITE, font=FONT_HUD_LARGE, anchor="w")
 
-        # Visual roll/pitch miniature indicator
-        cy += 24
-        ind_cx = (col1_x1 + col1_x2) / 2.0
-        ind_w = (col1_w - 30) / 2.0
-        self.create_line(ind_cx - ind_w, cy, ind_cx + ind_w, cy, fill=COLOR_BORDER_LIGHT, width=1)
-        self.create_line(ind_cx, cy - 8, ind_cx, cy + 8, fill=COLOR_BORDER_LIGHT, width=1)
+        # Mini Compass Ribbon Tape
+        iy += 22
+        tape_y = iy + 2
+        tape_x1 = x1 + 12
+        tape_x2 = x2 - 12
+        tape_w = tape_x2 - tape_x1
+        tape_cx = (tape_x1 + tape_x2) / 2.0
+        self.create_rectangle(tape_x1, tape_y, tape_x2, tape_y + 16, fill="#04060b", outline=COLOR_BORDER_LIGHT)
+        for offset in range(-60, 61, 15):
+            val = (self.heading + offset) % 360
+            tx = tape_cx + (offset / 60.0) * (tape_w / 2.0)
+            if tape_x1 + 6 <= tx <= tape_x2 - 6:
+                c_lbl = ""
+                if abs(val - 0) < 6 or abs(val - 360) < 6: c_lbl = "N"
+                elif abs(val - 90) < 6: c_lbl = "E"
+                elif abs(val - 180) < 6: c_lbl = "S"
+                elif abs(val - 270) < 6: c_lbl = "W"
+                if c_lbl:
+                    self.create_text(tx, tape_y + 8, text=c_lbl, fill=COLOR_CYAN, font=FONT_HUD_BOLD)
+                else:
+                    self.create_line(tx, tape_y + 10, tx, tape_y + 15, fill=COLOR_DIM, width=1)
+        self.create_line(tape_cx, tape_y - 2, tape_cx, tape_y + 18, fill=COLOR_GREEN, width=1.5)
+
+        iy += 28
+        self.create_text(x1 + 12, iy, text=f"ROLL:  {self.roll:+.1f}°", fill=COLOR_CYAN, font=FONT_HUD_REG, anchor="w")
+        self.create_text(x2 - 12, iy, text=f"PITCH: {self.pitch:+.1f}°", fill=COLOR_CYAN, font=FONT_HUD_REG, anchor="e")
+
+        # Artificial Horizon Director Box
+        iy += 18
+        box_w = min(120.0, w_col - 40)
+        box_h = 32.0
+        box_cx = (x1 + x2) / 2.0
+        box_cy = iy + box_h / 2.0
+        self.create_rectangle(box_cx - box_w/2, box_cy - box_h/2, box_cx + box_w/2, box_cy + box_h/2, fill="#04070e", outline=COLOR_BORDER_LIGHT)
         rad_r = math.radians(self.roll)
-        pitch_px = max(-10.0, min(10.0, self.pitch * 0.8))
+        pitch_px = max(-12.0, min(12.0, self.pitch * 0.7))
         cos_r, sin_r = math.cos(rad_r), math.sin(rad_r)
-        h_x1 = ind_cx - ind_w * cos_r
-        h_y1 = (cy - pitch_px) - ind_w * sin_r
-        h_x2 = ind_cx + ind_w * cos_r
-        h_y2 = (cy - pitch_px) + ind_w * sin_r
+        h_x1 = box_cx - (box_w/2 - 4) * cos_r
+        h_y1 = (box_cy - pitch_px) - (box_w/2 - 4) * sin_r
+        h_x2 = box_cx + (box_w/2 - 4) * cos_r
+        h_y2 = (box_cy - pitch_px) + (box_w/2 - 4) * sin_r
         self.create_line(h_x1, h_y1, h_x2, h_y2, fill=COLOR_GREEN, width=2)
-        self.create_oval(ind_cx - 2, cy - 2, ind_cx + 2, cy + 2, fill=COLOR_CYAN, outline="")
+        self.create_line(box_cx - 16, box_cy, box_cx - 4, box_cy, fill=COLOR_CYAN, width=2)
+        self.create_line(box_cx + 4, box_cy, box_cx + 16, box_cy, fill=COLOR_CYAN, width=2)
+        self.create_oval(box_cx - 2, box_cy - 2, box_cx + 2, box_cy + 2, fill=COLOR_CYAN, outline="")
 
-        # ================= CENTER COLUMN: 2D ROV & MOTOR DYNAMICS =================
-        self.create_rectangle(col2_x1, pan_y1, col2_x2, pan_y2, fill="#060810", outline=COLOR_BORDER_LIGHT)
-        self.create_rectangle(col2_x1, pan_y1, col2_x2, pan_y1 + 22, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
-        self.create_text(col2_x1 + 10, pan_y1 + 11, text="[ 2D ROV HULL & LIVE THRUST DYNAMICS ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+        # ================= CARD 3: ENVIRONMENT & HULL SEAL =================
+        cy1, cy2 = y1 + 2 * (card_h + c_gap), y2
+        self.create_rectangle(x1, cy1, x2, cy2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
+        self.create_rectangle(x1, cy1, x2, cy1 + 20, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
+        self.create_text(x1 + 10, cy1 + 10, text="[ 03. ENVIRONMENT & HULL ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
 
-        center_cx = (col2_x1 + col2_x2) / 2.0
-        # Embed the crisp 2D ROV frame right in the center panel!
-        rov_plot_cy = pan_y1 + 22 + (pan_y2 - pan_y1 - 22) / 2.0
-        self._draw_2d_frame_rov(center_cx, rov_plot_cy, col2_x2 - col2_x1, pan_h)
+        iy = cy1 + 28
+        self.create_text(x1 + 12, iy, text="WATER TEMPERATURE", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
+        iy += 18
+        self.create_text(x1 + 12, iy, text=f"{self.temp:.1f} °C", fill=COLOR_WHITE, font=FONT_HUD_LARGE, anchor="w")
+        t_col = COLOR_CYAN if self.temp < 35 else COLOR_AMBER
+        self.create_text(x2 - 12, iy, text="[NOMINAL]", fill=t_col, font=FONT_HUD_BOLD, anchor="e")
 
-        # ================= RIGHT COLUMN: POWER & PROPULSION =================
-        self.create_rectangle(col3_x1, pan_y1, col3_x2, pan_y2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
-        self.create_rectangle(col3_x1, pan_y1, col3_x2, pan_y1 + 22, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
-        self.create_text(col3_x1 + 10, pan_y1 + 11, text="[ POWER & PROPULSION ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+        iy += 22
+        vcc_ok = (4.80 <= self.vcc_v <= 5.30)
+        vcc_col = COLOR_GREEN if vcc_ok else COLOR_AMBER
+        vcc_stat = "STABLE ±5%" if vcc_ok else "OUT OF RANGE"
+        self.create_text(x1 + 12, iy, text=f"PIXHAWK 5V RAIL: {self.vcc_v:.2f} V", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+        iy += 16
+        self.create_text(x1 + 12, iy, text=f"RAIL STATUS: {vcc_stat}", fill=vcc_col, font=FONT_HUD_SMALL, anchor="w")
 
-        ry = pan_y1 + 35
-        # Battery Section
-        self.create_text(col3_x1 + 12, ry, text="BATTERY SYSTEM", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
-        ry += 20
+        # Hull Seal Alert Box
+        iy += 20
+        alert_y1 = iy
+        alert_y2 = cy2 - 8
+        if not self.leak_alert:
+            self.create_rectangle(x1 + 10, alert_y1, x2 - 10, alert_y2, fill="#082014", outline=COLOR_GREEN, width=1.5)
+            self.create_text((x1 + x2) / 2.0, alert_y1 + (alert_y2 - alert_y1) / 2.0 - 7, text="[ HULL SEALED: NOMINAL ]", fill=COLOR_GREEN, font=FONT_HUD_BOLD, anchor="center")
+            self.create_text((x1 + x2) / 2.0, alert_y1 + (alert_y2 - alert_y1) / 2.0 + 8, text="Moisture Sensors: DRY (OK)", fill=COLOR_GREEN, font=FONT_HUD_SMALL, anchor="center")
+        else:
+            self.create_rectangle(x1 + 10, alert_y1, x2 - 10, alert_y2, fill="#380a10", outline=COLOR_RED, width=2)
+            self.create_text((x1 + x2) / 2.0, alert_y1 + (alert_y2 - alert_y1) / 2.0 - 7, text="! ! CRITICAL LEAK ! !", fill=COLOR_RED, font=FONT_HUD_BOLD, anchor="center")
+            self.create_text((x1 + x2) / 2.0, alert_y1 + (alert_y2 - alert_y1) / 2.0 + 8, text="WATER INGRESS DETECTED", fill=COLOR_WHITE, font=FONT_HUD_SMALL, anchor="center")
+
+    def _draw_telem_center_column(self, x1: float, y1: float, x2: float, y2: float):
+        """
+        Center Column:
+        Upper Panel: 2D Top-down ROV Chassis with live animated thrusters.
+        Lower Panel: Dedicated Live Thrust Monitor & Closed-Loop Motor Matrix.
+        """
+        col2_w = x2 - x1
+        col2_h = y2 - y1
+
+        top_h = max(200.0, min(260.0, col2_h * 0.42))
+        top_y1 = y1
+        top_y2 = y1 + top_h
+
+        bot_y1 = top_y2 + 6.0
+        bot_y2 = y2
+
+        # ----------------- UPPER PANEL: 2D ROV CHASSIS -----------------
+        self.create_rectangle(x1, top_y1, x2, top_y2, fill="#060810", outline=COLOR_BORDER_LIGHT)
+        self.create_rectangle(x1, top_y1, x2, top_y1 + 20, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
+        frame_name = self.matrix_mgr.get_frame_name(self.frame_id).upper()
+        self.create_text(x1 + 10, top_y1 + 10, text=f"[ 2D ROV CHASSIS: {frame_name} (FRAME ID {self.frame_id}) ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+
+        cx = (x1 + x2) / 2.0
+        cy = top_y1 + 20 + (top_h - 20) / 2.0
+
+        frame_data = FRAMES.get(self.frame_id, FRAMES.get(DEFAULT_FRAME_ID, FRAMES[6]))
+        thrusters = frame_data.get("thrusters", [])
+        if not thrusters:
+            thrusters = FRAMES[6]["thrusters"]
+
+        # Top-down ROV Hull silhouette
+        tube_w = 32.0
+        tube_h = 68.0
+        self.create_rectangle(cx - tube_w/2, cy - tube_h/2, cx + tube_w/2, cy + tube_h/2, fill="#0c1724", outline=COLOR_CYAN_DIM, width=1.5)
+        # Front optical dome
+        dome_r = tube_w / 2.0
+        self.create_arc(cx - dome_r, cy - tube_h/2 - dome_r, cx + dome_r, cy - tube_h/2 + dome_r, start=0, extent=180, fill="#0369a1", outline=COLOR_CYAN, width=1.5)
+        self.create_oval(cx - 3, cy - tube_h/2 - 4, cx + 3, cy - tube_h/2 + 2, fill="#38bdf8", outline="")
+        self.create_text(cx, cy - tube_h/2 - 12, text="▲ FWD (BOW)", fill=COLOR_CYAN, font=FONT_HUD_SMALL)
+
+        # HDPE side rails
+        for side_sign in (-1, 1):
+            rx = cx + side_sign * (tube_w / 2.0 + 12.0)
+            self.create_line(rx, cy - tube_h/2 + 6, rx, cy + tube_h/2 - 6, fill="#1e293b", width=3)
+            self.create_line(cx + side_sign * (tube_w / 2.0), cy - 14, rx, cy - 14, fill="#334155", width=1)
+            self.create_line(cx + side_sign * (tube_w / 2.0), cy + 14, rx, cy + 14, fill="#334155", width=1)
+
+        # Dynamic Yaw moment indicator
+        if self.armed and abs(self.thrust_yaw) > 0.06:
+            turn_is_right = (self.thrust_yaw > 0)
+            arc_r = 34.0
+            yaw_col = COLOR_GREEN if abs(self.thrust_yaw) > 0.25 else COLOR_CYAN
+            yaw_dash = () if abs(self.thrust_yaw) > 0.40 else (4, 3)
+            self.create_arc(cx - arc_r, cy - tube_h/2 - 18, cx + arc_r, cy - tube_h/2 + 10, start=45, extent=90, style="arc", outline=yaw_col, width=2, dash=yaw_dash)
+            if turn_is_right:
+                ah_x = cx + arc_r * math.cos(math.radians(45))
+                ah_y = (cy - tube_h/2 - 4) - 14 * math.sin(math.radians(45))
+                self.create_polygon(ah_x + 5, ah_y, ah_x - 3, ah_y - 4, ah_x - 3, ah_y + 4, fill=yaw_col, outline="")
+                self.create_text(cx, cy - tube_h/2 - 20, text="YAW CW ↻", fill=yaw_col, font=FONT_HUD_BOLD)
+            else:
+                ah_x = cx + arc_r * math.cos(math.radians(135))
+                ah_y = (cy - tube_h/2 - 4) - 14 * math.sin(math.radians(135))
+                self.create_polygon(ah_x - 5, ah_y, ah_x + 3, ah_y - 4, ah_x + 3, ah_y + 4, fill=yaw_col, outline="")
+                self.create_text(cx, cy - tube_h/2 - 20, text="↺ YAW CCW", fill=yaw_col, font=FONT_HUD_BOLD)
+
+        # Dynamic Lateral strafe indicator
+        if self.armed and abs(self.thrust_lat) > 0.08 and self._has_lateral_capability():
+            lat_right = (self.thrust_lat > 0)
+            lat_str = "STRAFE RIGHT ►" if lat_right else "◄ STRAFE LEFT"
+            self.create_text(cx, cy + tube_h/2 + 14, text=lat_str, fill=COLOR_CYAN, font=FONT_HUD_BOLD)
+
+        # Thrusters plotted with generous span
+        span_x = min(180.0, max(110.0, (col2_w - 60) * 0.38))
+        span_y = min(80.0, max(45.0, (top_h - 40) * 0.38))
+
+        for idx, t_info in enumerate(thrusters):
+            num = t_info.get("num", idx + 1)
+            pos = t_info.get("pos", (0.0, 0.0))
+            angle = t_info.get("angle", 0)
+            tx = cx + pos[0] * span_x
+            ty = cy - pos[1] * span_y
+
+            cmd_pwm = self.motor_cmd_pwm[num - 1] if 0 < num <= 8 else 1500
+            is_rev_motor = (self.matrix_mgr.motor_directions.get(num, 1) == -1)
+            eff_fwd = (cmd_pwm > 1520) if not is_rev_motor else (cmd_pwm < 1480)
+            eff_rev = (cmd_pwm < 1480) if not is_rev_motor else (cmd_pwm > 1520)
+            is_active = abs(cmd_pwm - 1500) > 20
+
+            t_border = COLOR_GREEN if eff_fwd else (COLOR_AMBER if eff_rev else (COLOR_CYAN if is_active else (COLOR_CYAN_DIM if self.armed else COLOR_BORDER_LIGHT)))
+            prop_col = t_border
+            p_ang = math.radians(self._prop_angles.get(num, 0.0))
+
+            if angle == 90:
+                # Vertical Thruster
+                vr = 9.0
+                self.create_oval(tx - vr, ty - vr, tx + vr, ty + vr, fill="#050811", outline=t_border, width=1.8)
+                self.create_oval(tx - vr + 2.5, ty - vr + 2.5, tx + vr - 2.5, ty + vr - 2.5, outline="#181824", width=1)
+                blade_r = 5.0
+                for b in range(3):
+                    ba = p_ang + (b * 2 * math.pi / 3.0)
+                    bx = tx + math.cos(ba) * blade_r
+                    by = ty + math.sin(ba) * blade_r
+                    self.create_line(tx, ty, bx, by, fill=prop_col, width=1.5)
+                self.create_oval(tx - 2, ty - 2, tx + 2, ty + 2, fill=prop_col, outline="")
+
+                if eff_fwd:
+                    self.create_polygon(tx, ty - vr - 8, tx - 4, ty - vr - 2, tx + 4, ty - vr - 2, fill=COLOR_GREEN, outline="")
+                    self.create_text(tx, ty - vr - 13, text="▲ UP", fill=COLOR_GREEN, font=FONT_HUD_SMALL)
+                elif eff_rev:
+                    self.create_polygon(tx, ty + vr + 8, tx - 4, ty + vr + 2, tx + 4, ty + vr + 2, fill=COLOR_AMBER, outline="")
+                    self.create_text(tx, ty + vr + 13, text="▼ DN", fill=COLOR_AMBER, font=FONT_HUD_SMALL)
+                t_w = vr * 2
+            else:
+                # Horizontal Thruster
+                rad = math.radians(angle)
+                cos_a, sin_a = math.cos(rad), math.sin(rad)
+                w_half, h_half = 6.0, 10.0
+                c1_x = tx + (-w_half * cos_a - (-h_half) * sin_a)
+                c1_y = ty + (-w_half * sin_a + (-h_half) * cos_a)
+                c2_x = tx + (w_half * cos_a - (-h_half) * sin_a)
+                c2_y = ty + (w_half * sin_a + (-h_half) * cos_a)
+                c3_x = tx + (w_half * cos_a - h_half * sin_a)
+                c3_y = ty + (w_half * sin_a + h_half * cos_a)
+                c4_x = tx + (-w_half * cos_a - h_half * sin_a)
+                c4_y = ty + (-w_half * sin_a + h_half * cos_a)
+                self.create_polygon(c1_x, c1_y, c2_x, c2_y, c3_x, c3_y, c4_x, c4_y, fill="#050811", outline=t_border, width=1.8)
+
+                blade_r = 5.0
+                for b in range(3):
+                    ba = p_ang + (b * 2 * math.pi / 3.0)
+                    bx = tx + math.cos(ba) * blade_r
+                    by = ty + math.sin(ba) * blade_r
+                    self.create_line(tx, ty, bx, by, fill=prop_col, width=1.5)
+                self.create_oval(tx - 2, ty - 2, tx + 2, ty + 2, fill=prop_col, outline="")
+
+                # Wake Plumes
+                axis_x, axis_y = -math.sin(rad), math.cos(rad)
+                thrust_val = (cmd_pwm - 1500) / 500.0
+                plume_len = min(22.0, abs(thrust_val) * 18.0 + 4.0)
+                if eff_fwd:
+                    sx = tx + axis_x * h_half
+                    sy = ty + axis_y * h_half
+                    ex = tx + axis_x * (h_half + plume_len)
+                    ey = ty + axis_y * (h_half + plume_len)
+                    self.create_line(sx, sy, ex, ey, fill=COLOR_GREEN, width=2)
+                elif eff_rev:
+                    sx = tx - axis_x * h_half
+                    sy = ty - axis_y * h_half
+                    ex = tx - axis_x * (h_half + plume_len)
+                    ey = ty - axis_y * (h_half + plume_len)
+                    self.create_line(sx, sy, ex, ey, fill=COLOR_AMBER, width=2)
+                t_w = 20.0
+
+            # Motor ID Badge on frame
+            text_side = 1 if pos[0] >= 0 else -1
+            bx = tx + text_side * (t_w / 2.0 + 6.0)
+            anchor = "w" if text_side == 1 else "e"
+            badge_lbl = f"M{num}" + ("*" if is_rev_motor else "")
+            self.create_text(bx, ty, text=badge_lbl, fill=t_border, font=FONT_HUD_BOLD, anchor=anchor)
+
+        # ----------------- LOWER PANEL: LIVE THRUST MONITOR -----------------
+        self.create_rectangle(x1, bot_y1, x2, bot_y2, fill="#060810", outline=COLOR_BORDER_LIGHT)
+        self.create_rectangle(x1, bot_y1, x2, bot_y1 + 22, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
+        self.create_text(x1 + 10, bot_y1 + 11, text="[ LIVE THRUST MONITOR & CLOSED-LOOP MOTOR MATRIX ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+
+        has_probe = any(self.motor_probe_valid[:8])
+        probe_tag = "HARDWARE PROBE: ACTIVE" if has_probe else "PROBE: SIMULATED / OFFLINE"
+        probe_col = COLOR_GREEN if has_probe else COLOR_DIM
+        self.create_text(x2 - 10, bot_y1 + 11, text=probe_tag, fill=probe_col, font=FONT_HUD_SMALL, anchor="e")
+
+        # Layout thruster channels into Port (Left) and Starboard (Right) columns
+        m_y1 = bot_y1 + 26.0
+        m_y2 = bot_y2 - 20.0
+        m_h = m_y2 - m_y1
+        m_w = col2_w - 16.0
+
+        thruster_list = thrusters
+        port_list = [t for t in thruster_list if t.get("pos", (0, 0))[0] < 0 or (t.get("pos", (0, 0))[0] == 0 and t["num"] % 2 != 0)]
+        stbd_list = [t for t in thruster_list if t.get("pos", (0, 0))[0] > 0 or (t.get("pos", (0, 0))[0] == 0 and t["num"] % 2 == 0)]
+        if not port_list or not stbd_list:
+            mid = (len(thruster_list) + 1) // 2
+            port_list = thruster_list[:mid]
+            stbd_list = thruster_list[mid:]
+
+        max_rows = max(len(port_list), len(stbd_list), 1)
+        r_gap = 4.0
+        row_h = min(62.0, max(42.0, (m_h - (max_rows - 1) * r_gap) / max_rows))
+
+        half_w = (m_w - 8.0) / 2.0
+        col_boxes = [
+            (port_list, x1 + 8.0, x1 + 8.0 + half_w, "PORT THRUSTERS"),
+            (stbd_list, x1 + 8.0 + half_w + 8.0, x2 - 8.0, "STARBOARD THRUSTERS"),
+        ]
+
+        for t_sublist, bx1, bx2, col_title in col_boxes:
+            for r_idx, t in enumerate(t_sublist):
+                ry1 = m_y1 + r_idx * (row_h + r_gap)
+                ry2 = ry1 + row_h
+                num = t["num"]
+                cmd_pwm = self.motor_cmd_pwm[num - 1] if 0 < num <= 8 else 1500
+                is_prb = self.motor_probe_valid[num - 1] if 0 < num <= 8 else False
+                prb_pwm = self.motor_probe_pwm[num - 1] if (is_prb and 0 < num <= 8) else 0
+                delta = (prb_pwm - cmd_pwm) if is_prb else 0
+                is_rev = (self.matrix_mgr.motor_directions.get(num, 1) == -1)
+
+                eff_fwd = (cmd_pwm > 1520) if not is_rev else (cmd_pwm < 1480)
+                eff_rev = (cmd_pwm < 1480) if not is_rev else (cmd_pwm > 1520)
+                is_act = abs(cmd_pwm - 1500) > 20
+
+                c_col = COLOR_GREEN if eff_fwd else (COLOR_AMBER if eff_rev else (COLOR_CYAN if is_act else COLOR_DIM))
+
+                # Channel Card Box
+                self.create_rectangle(bx1, ry1, bx2, ry2, fill="#070a14", outline=COLOR_BORDER_LIGHT, width=1)
+
+                # Line 1: Badge, Role, Commanded PWM
+                # Pill Badge
+                b_w = 34.0
+                self.create_rectangle(bx1 + 4, ry1 + 3, bx1 + 4 + b_w, ry1 + 17, fill="#0f172a", outline=c_col if is_act else COLOR_BORDER_LIGHT)
+                self.create_text(bx1 + 4 + b_w / 2.0, ry1 + 10, text=f"M{num}" + ("*" if is_rev else ""), fill=c_col if is_act else COLOR_WHITE, font=FONT_HUD_BOLD)
+
+                role_raw = t.get("role", f"Motor {num}")
+                role_short = role_raw.replace("Horizontal Thrust", "HORIZ").replace("Vertical Depth", "VERT").replace("Vectored", "VEC")[:15].upper()
+                self.create_text(bx1 + 4 + b_w + 6, ry1 + 10, text=role_short, fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
+
+                cmd_txt = f"CMD:{cmd_pwm}µs"
+                self.create_text(bx2 - 6, ry1 + 10, text=cmd_txt, fill=c_col if is_act else COLOR_WHITE, font=FONT_HUD_BOLD, anchor="e")
+
+                # Line 2: Closed-Loop Probe & Jitter Delta
+                if is_prb and prb_pwm > 800:
+                    d_col = COLOR_GREEN if abs(delta) <= 25 else COLOR_AMBER
+                    prb_str = f"PRB:{prb_pwm}µs (Δ{delta:+d}µs)"
+                else:
+                    d_col = COLOR_DIM
+                    prb_str = "PRB:[OFFLINE / SIM]"
+                self.create_text(bx1 + 6, ry1 + 23, text=prb_str, fill=d_col, font=FONT_HUD_TINY, anchor="w")
+
+                if eff_fwd:
+                    act_txt = "▲ FWD" if t.get("angle", 0) != 90 else "▲ UP"
+                    act_col = COLOR_GREEN
+                elif eff_rev:
+                    act_txt = "▼ REV" if t.get("angle", 0) != 90 else "▼ DN"
+                    act_col = COLOR_AMBER
+                elif is_act:
+                    act_txt = "• ACT"
+                    act_col = COLOR_CYAN
+                else:
+                    act_txt = "IDLE"
+                    act_col = COLOR_DIM
+                self.create_text(bx2 - 6, ry1 + 23, text=act_txt, fill=act_col, font=FONT_HUD_TINY, anchor="e")
+
+                # Line 3: Bi-Directional Real-Time Thrust Bar
+                bar_y = ry1 + row_h - 11
+                bar_x1 = bx1 + 6
+                bar_x2 = bx2 - 44
+                bar_len = bar_x2 - bar_x1
+                bar_cx = (bar_x1 + bar_x2) / 2.0
+
+                self.create_rectangle(bar_x1, bar_y, bar_x2, bar_y + 7, outline=COLOR_BORDER_LIGHT, fill="#04060b")
+                self.create_line(bar_cx, bar_y - 2, bar_cx, bar_y + 9, fill=COLOR_DIM, width=1.5)
+
+                diff = cmd_pwm - 1500
+                norm_t = max(-1.0, min(1.0, diff / 400.0 if not is_rev else -diff / 400.0))
+                if abs(norm_t) > 0.02:
+                    fill_x = bar_cx + norm_t * (bar_len / 2.0)
+                    f_x1 = min(bar_cx, fill_x)
+                    f_x2 = max(bar_cx, fill_x)
+                    self.create_rectangle(f_x1, bar_y + 1, f_x2, bar_y + 6, fill=c_col, outline="")
+
+                pct_num = int(norm_t * 100)
+                self.create_text(bx2 - 6, bar_y + 3, text=f"{pct_num:+3d}%", fill=c_col if is_act else COLOR_DIM, font=FONT_HUD_SMALL, anchor="e")
+
+        # Live Thrust Monitor Footer summary
+        max_thrust_pct = int(max([abs(self.motor_cmd_pwm[t["num"]-1] - 1500) for t in thruster_list] + [0]) / 5.0)
+        footer_str = f"ACTIVE: {len(thruster_list)} THRUSTERS | MAX OUTPUT: {max_thrust_pct}% | PROTOCOL: 1.1µs PWM | MATRIX: SYNCHRONIZED"
+        self.create_text((x1 + x2) / 2.0, bot_y2 - 9, text=footer_str, fill=COLOR_CYAN_DIM, font=FONT_HUD_SMALL, anchor="center")
+
+    def _draw_telem_power_column(self, x1: float, y1: float, x2: float, y2: float):
+        """Right Column: Power & Battery, Resolved Flight Forces, and Pilot Inputs."""
+        w_col = x2 - x1
+        h_col = y2 - y1
+        c_gap = 6.0
+        card_h = (h_col - 2 * c_gap) / 3.0
+
+        # ================= CARD 1: POWER & ELECTRICAL =================
+        cy1, cy2 = y1, y1 + card_h
+        self.create_rectangle(x1, cy1, x2, cy2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
+        self.create_rectangle(x1, cy1, x2, cy1 + 20, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
+        self.create_text(x1 + 10, cy1 + 10, text="[ 01. POWER & ELECTRICAL ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+
+        iy = cy1 + 28
+        self.create_text(x1 + 12, iy, text="BATTERY SYSTEM", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
+        pack_stat = "HEALTHY" if self.batt_v >= 14.2 else ("CAUTION" if self.batt_v >= 13.6 else "CRITICAL")
         v_col = COLOR_GREEN if self.batt_v >= 14.5 else (COLOR_AMBER if self.batt_v >= 13.8 else COLOR_RED)
-        self.create_text(col3_x1 + 12, ry, text=f"{self.batt_v:.2f} V", fill=v_col, font=FONT_HUD_HUGE, anchor="w")
-        ry += 24
-        self.create_text(col3_x1 + 12, ry, text=f"CURRENT:  {self.batt_a:.1f} A", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
-        ry += 18
-        self.create_text(col3_x1 + 12, ry, text=f"VCC RAIL: {self.vcc_v:.2f} V", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+        self.create_text(x2 - 12, iy, text=f"[{pack_stat}]", fill=v_col, font=FONT_HUD_BOLD, anchor="e")
 
-        # Battery Bar
-        ry += 16
-        b_bar_w = col3_w - 24
-        self.create_rectangle(col3_x1 + 12, ry, col3_x1 + 12 + b_bar_w, ry + 6, outline=COLOR_BORDER_LIGHT)
+        iy += 20
+        self.create_text(x1 + 12, iy, text=f"{self.batt_v:.2f} V", fill=v_col, font=FONT_HUD_HUGE, anchor="w")
+
+        iy += 24
+        power_w = self.batt_v * self.batt_a
+        self.create_text(x1 + 12, iy, text=f"CURRENT: {self.batt_a:.1f} A", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+        self.create_text(x2 - 12, iy, text=f"POWER: {power_w:.1f} W", fill=COLOR_CYAN, font=FONT_HUD_REG, anchor="e")
+
+        iy += 20
+        bar_x1 = x1 + 12
+        bar_x2 = x2 - 12
+        bar_w = bar_x2 - bar_x1
+        bar_y = iy + 2
+        self.create_rectangle(bar_x1, bar_y, bar_x2, bar_y + 8, outline=COLOR_BORDER_LIGHT, fill="#04070e")
         pct = max(0.0, min(1.0, (self.batt_v - 13.5) / (16.8 - 13.5))) if self.batt_v > 5.0 else 0.0
-        if pct > 0.0:
-            self.create_rectangle(col3_x1 + 13, ry + 1, col3_x1 + 12 + int(pct * b_bar_w), ry + 5, fill=v_col, outline="")
-        ry += 14
+        if pct > 0:
+            fill_w = int(pct * bar_w)
+            self.create_rectangle(bar_x1 + 1, bar_y + 1, bar_x1 + fill_w, bar_y + 7, fill=v_col, outline="")
 
-        # Divider
-        self.create_line(col3_x1 + 10, ry, col3_x2 - 10, ry, fill=COLOR_BORDER_LIGHT)
-        ry += 14
+        iy += 18
+        pct_int = int(pct * 100)
+        self.create_text(bar_x1, iy, text=f"SOC: {pct_int}% (4S LiPo)", fill=COLOR_DIM, font=FONT_HUD_SMALL, anchor="w")
+        self.create_text(bar_x2, iy, text=f"CELL AVG: {self.batt_v/4.0:.2f}V", fill=COLOR_DIM, font=FONT_HUD_SMALL, anchor="e")
 
-        # Propulsion Forces / Thrust Vectors (calculated from active motors)
-        self.create_text(col3_x1 + 12, ry, text="THRUST VECTORS (FROM MOTORS)", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
-        ry += 18
+        # ================= CARD 2: RESOLVED FLIGHT FORCES =================
+        cy1, cy2 = y1 + card_h + c_gap, y1 + 2 * card_h + c_gap
+        self.create_rectangle(x1, cy1, x2, cy2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
+        self.create_rectangle(x1, cy1, x2, cy1 + 20, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
+        self.create_text(x1 + 10, cy1 + 10, text="[ 02. RESOLVED FLIGHT FORCES ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
 
+        iy = cy1 + 26
+        self.create_text(x1 + 12, iy, text="PROJECTION FROM MOTOR MIXER", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")
+
+        iy += 16
         vector_items = [
             ("FORWARD", self.thrust_fwd, COLOR_GREEN if self.thrust_fwd >= 0 else COLOR_AMBER),
             ("LATERAL", self.thrust_lat, COLOR_CYAN),
             ("DEPTH", self.thrust_depth, COLOR_GREEN if self.thrust_depth >= 0 else COLOR_AMBER),
-            ("YAW", self.thrust_yaw, COLOR_GREEN if self.thrust_yaw >= 0 else COLOR_CYAN),
+            ("YAW ROT", self.thrust_yaw, COLOR_GREEN if self.thrust_yaw >= 0 else COLOR_CYAN),
         ]
 
-        bar_len = col3_w - 110
+        has_lat = self._has_lateral_capability()
         for name, val, col in vector_items:
-            self.create_text(col3_x1 + 12, ry, text=f"{name:7s}", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
-            bx1 = col3_x1 + 80
-            bx2 = bx1 + bar_len
+            if name == "LATERAL" and not has_lat:
+                self.create_text(x1 + 12, iy, text=f"{name:7s}", fill=COLOR_DIM, font=FONT_HUD_REG, anchor="w")
+                self.create_text(x2 - 12, iy, text="[NO LATERAL STRAFE]", fill=COLOR_DIM, font=FONT_HUD_SMALL, anchor="e")
+                iy += 20
+                continue
+
+            self.create_text(x1 + 12, iy, text=f"{name:7s}", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+            bx1 = x1 + 75
+            bx2 = x2 - 48
+            bw = bx2 - bx1
             bcx = (bx1 + bx2) / 2.0
-            self.create_line(bx1, ry, bx2, ry, fill=COLOR_BORDER_LIGHT, width=1)
-            self.create_line(bcx, ry - 4, bcx, ry + 4, fill=COLOR_DIM, width=1)
+            self.create_line(bx1, iy, bx2, iy, fill=COLOR_BORDER_LIGHT, width=1)
+            self.create_line(bcx, iy - 4, bcx, iy + 4, fill=COLOR_DIM, width=1.5)
+
             val_clamp = max(-1.0, min(1.0, val))
             if abs(val_clamp) > 0.02:
-                v_x = bcx + val_clamp * (bar_len / 2.0)
-                self.create_line(bcx, ry, v_x, ry, fill=col, width=4)
+                vx = bcx + val_clamp * (bw / 2.0)
+                self.create_line(bcx, iy, vx, iy, fill=col, width=4)
             pct_val = int(val_clamp * 100)
-            self.create_text(bx2 + 6, ry, text=f"{pct_val:+3d}%", fill=col, font=FONT_HUD_SMALL, anchor="w")
-            ry += 20
+            self.create_text(x2 - 12, iy, text=f"{pct_val:+3d}%", fill=col, font=FONT_HUD_SMALL, anchor="e")
+            iy += 20
 
-        # Pilot Controller info
-        ry += 6
-        self.create_line(col3_x1 + 10, ry, col3_x2 - 10, ry, fill=COLOR_BORDER_LIGHT)
-        ry += 14
+        # ================= CARD 3: PILOT CONTROL & UPLINK =================
+        cy1, cy2 = y1 + 2 * (card_h + c_gap), y2
+        self.create_rectangle(x1, cy1, x2, cy2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
+        self.create_rectangle(x1, cy1, x2, cy1 + 20, fill="#0d1424", outline=COLOR_BORDER_LIGHT)
+        self.create_text(x1 + 10, cy1 + 10, text="[ 03. PILOT CONTROL & UPLINK ]", fill=COLOR_CYAN, font=FONT_HUD_BOLD, anchor="w")
+
+        iy = cy1 + 26
         ctrl_col = COLOR_GREEN if self.gamepad_connected else COLOR_DIM
-        self.create_text(col3_x1 + 12, ry, text=f"PILOT: {self.controller_name[:18]}", fill=ctrl_col, font=FONT_HUD_REG, anchor="w")
-        ry += 16
-        self.create_text(col3_x1 + 12, ry, text=f"GAIN: {int(self.gain * 100)}% | STATUS: {self.statustext[:16]}", fill=COLOR_DIM, font=FONT_HUD_SMALL, anchor="w")
+        ctrl_badge = "[CONNECTED]" if self.gamepad_connected else "[OFFLINE]"
+        self.create_text(x1 + 12, iy, text=f"PILOT: {self.controller_name[:16]}", fill=ctrl_col, font=FONT_HUD_REG, anchor="w")
+        self.create_text(x2 - 12, iy, text=ctrl_badge, fill=ctrl_col, font=FONT_HUD_BOLD, anchor="e")
 
-        # 3. Bottom Status Strip (Height: 22px)
-        bot_y1 = h - 28.0
-        bot_y2 = h - 8.0
-        self.create_rectangle(14, bot_y1, w - 14, bot_y2, fill="#070a12", outline=COLOR_BORDER_LIGHT)
-        frame_name = self.matrix_mgr.get_frame_name(self.frame_id)
-        self.create_text(
-            24, (bot_y1 + bot_y2) / 2.0,
-            text=f"FRAME: {frame_name.upper()} (ID {self.frame_id}) | ESC COMM PROTOCOL: PWM 1.1µs | MODE: PURE TELEMETRY",
-            fill=COLOR_CYAN_DIM,
-            font=FONT_HUD_SMALL,
-            anchor="w"
-        )
-        self.create_text(
-            w - 24, (bot_y1 + bot_y2) / 2.0,
-            text="[ HUD GRAPHICS: DISABLED ]",
-            fill=COLOR_AMBER,
-            font=FONT_HUD_SMALL,
-            anchor="e"
-        )
+        iy += 20
+        self.create_text(x1 + 12, iy, text=f"FLIGHT GAIN: {int(self.gain * 100)}%", fill=COLOR_WHITE, font=FONT_HUD_REG, anchor="w")
+        gb_x1 = x1 + 115
+        gb_x2 = x2 - 12
+        gb_w = gb_x2 - gb_x1
+        self.create_rectangle(gb_x1, iy - 4, gb_x2, iy + 4, outline=COLOR_BORDER_LIGHT, fill="#04070e")
+        self.create_rectangle(gb_x1 + 1, iy - 3, gb_x1 + int(self.gain * gb_w), iy + 3, fill=COLOR_CYAN, outline="")
+
+        iy += 20
+        self.create_text(x1 + 12, iy, text=f"STICKS: F:{self.cmd_fwd:+3d} L:{self.cmd_lat:+3d} D:{self.cmd_depth:+3d} Y:{self.cmd_yaw:+3d}", fill=COLOR_CYAN_DIM, font=FONT_HUD_SMALL, anchor="w")
+
+        iy += 18
+        arm_txt = "ARMED" if self.armed else "DISARMED"
+        arm_col = COLOR_GREEN if self.armed else COLOR_DIM
+        self.create_text(x1 + 12, iy, text=f"FC MODE: {self.mode_name} | {arm_txt}", fill=arm_col, font=FONT_HUD_REG, anchor="w")
+
+        iy += 18
+        has_probe = any(self.motor_probe_valid[:8])
+        probe_col = COLOR_GREEN if has_probe else COLOR_DIM
+        probe_txt = "CLOSED-LOOP: HARDWARE LINKED" if has_probe else "CLOSED-LOOP: BENCH SIMULATION"
+        self.create_text(x1 + 12, iy, text=probe_txt, fill=probe_col, font=FONT_HUD_SMALL, anchor="w")
+
+        iy += 18
+        self.create_text(x1 + 12, iy, text=f"TELEMETRY STREAM: {self.packet_rate:.0f} Hz [NOMINAL]", fill=COLOR_TEXT_DIM, font=FONT_HUD_SMALL, anchor="w")

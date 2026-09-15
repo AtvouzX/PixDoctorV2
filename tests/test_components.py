@@ -468,9 +468,17 @@ class TestPixDoctorV2Core(unittest.TestCase):
         self.assertEqual(hud.thrust_yaw, 0.0)
         self.assertEqual(hud.thrust_depth, 0.0)
 
-        # 5. Pure telemetry dashboard renders cleanly without error
+        # 5. Pure telemetry dashboard renders cleanly with full rich avionics items
         hud.set_hud_graphics_mode(False)
+        hud.winfo_width = lambda: 1200
+        hud.winfo_height = lambda: 700
         hud.redraw()
+        self.assertGreater(len(hud.find_all()), 100)
+
+        # 6. Test BlueROV2 frame in pure telemetry mode
+        hud.set_frame_id(2)
+        hud.redraw()
+        self.assertGreater(len(hud.find_all()), 120)
 
         hud.destroy()
         root.destroy()

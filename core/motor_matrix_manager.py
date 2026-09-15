@@ -264,6 +264,12 @@ class MotorMatrixManager:
                 "axis_mappings": dict(self.axis_mappings),
             }
 
+    def get_frame_name(self, frame_id: Optional[int] = None) -> str:
+        fid = frame_id if frame_id is not None else self.frame_id
+        from core.ardusub_defs import FRAMES, DEFAULT_FRAME_ID
+        return FRAMES.get(fid, FRAMES.get(DEFAULT_FRAME_ID, FRAMES.get(6, {}))).get("name", f"Frame {fid}")
+
+
     def compute_motor_pwms(
         self,
         fwd: int,
