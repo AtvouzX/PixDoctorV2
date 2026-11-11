@@ -7,8 +7,10 @@ response curves, and customizable button action mapping with persistence.
 """
 
 import os
+import sys
 import time
 import json
+import copy
 import ctypes
 import threading
 from typing import Dict, Any, List, Optional, Callable
@@ -80,6 +82,9 @@ GAMEPAD_ACTIONS: Dict[str, str] = {
     "CAMERA_TILT_CENTER": "Camera Tilt Center (0°)",
     "LIGHTS_CYCLE": "Cycle Lumen Lights (0/25/50/100%)",
     "LIGHTS_OFF": "Lumen Lights Off (0%)",
+    "CLAW_GRAB": "Close Claw / Grab Object (Torpedosub BTS7960)",
+    "CLAW_RELEASE": "Open Claw / Release (Torpedosub BTS7960)",
+    "CLAW_STOP": "Stop Claw Motion (Torpedosub BTS7960)",
     "GAIN_INCREASE": "Increase Gain Preset (+25%)",
     "GAIN_DECREASE": "Decrease Gain Preset (-25%)",
     "NONE": "Unmapped / No Action",
@@ -89,13 +94,13 @@ DEFAULT_BUTTON_MAPPINGS: Dict[str, str] = {
     "btn_start": "TOGGLE_ARM",
     "btn_back": "CYCLE_MODE",
     "btn_a": "DISARM",
-    "btn_b": "NONE",
+    "btn_b": "CLAW_GRAB",
     "btn_x": "CAMERA_TILT_DOWN",
     "btn_y": "CAMERA_TILT_UP",
     "btn_lb": "LIGHTS_OFF",
     "btn_rb": "LIGHTS_CYCLE",
-    "btn_l3": "NONE",
-    "btn_r3": "CAMERA_TILT_CENTER",
+    "btn_l3": "CLAW_RELEASE",
+    "btn_r3": "CLAW_STOP",
     "dpad_up": "GAIN_INCREASE",
     "dpad_down": "GAIN_DECREASE",
     "dpad_left": "MODE_MANUAL",
@@ -240,12 +245,20 @@ class GamepadManager:
     def __init__(
         self,
         action_callback: Optional[Callable[[str, Any], None]] = None,
-        config_file: Optional[str] = None
+        config_file: Optional[str] = None,
+        preferred_name: str = "Xbox",
+        device_index: int = 0,
     ):
         self.state = GamepadState()
         self.action_callback = action_callback
         self.running: bool = False
         self._thread: Optional[threading.Thread] = None
+
+        # SDL (Linux/Jetson) device selection. Windows keeps XInput/WinMM.
+        self.preferred_name = preferred_name
+        self.device_index = device_index
+        self._sdl_joystick = None
+        self._sdl_name = ""
 
         # Load XInput DLL
         self._xinput = None
@@ -260,22 +273,26 @@ class GamepadManager:
 
         # Load WinMM DLL
         self._winmm = None
-        try:
-            self._winmm = ctypes.windll.winmm
-            self._winmm.joyGetPosEx.argtypes = [ctypes.c_uint, ctypes.POINTER(JOYINFOEX)]
-            self._winmm.joyGetPosEx.restype = ctypes.c_uint
-            self._winmm.joyGetNumDevs.argtypes = []
-            self._winmm.joyGetNumDevs.restype = ctypes.c_uint
-        except Exception:
-            pass
+        if sys.platform == "win32":
+            try:
+                self._winmm = ctypes.windll.winmm
+                self._winmm.joyGetPosEx.argtypes = [ctypes.c_uint, ctypes.POINTER(JOYINFOEX)]
+                self._winmm.joyGetPosEx.restype = ctypes.c_uint
+                self._winmm.joyGetNumDevs.argtypes = []
+                self._winmm.joyGetNumDevs.restype = ctypes.c_uint
+            except Exception:
+                pass
 
         # Previous button states for edge detection
         self._prev_buttons: Dict[str, bool] = {}
 
-        # Multi-profile holders
+        # Multi-profile holders & saved snapshot
         self.profiles: Dict[str, Dict[str, Any]] = {}
+        self._saved_profiles: Dict[str, Dict[str, Any]] = {}
         self.active_profile_name: str = "Default"
+        self._saved_active_profile: str = "Default"
         self._profile_callbacks: List[Callable[[str], None]] = []
+        self._change_callbacks: List[Callable[[], None]] = []
 
         # Config file path for persistent settings
         default_cfg = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "gamepad_config.json")
@@ -286,7 +303,8 @@ class GamepadManager:
         """Start polling worker thread."""
         if not self.running:
             self.running = True
-            self._thread = threading.Thread(target=self._polling_loop, daemon=True, name="GamepadWorker")
+            target = self._polling_loop if sys.platform == "win32" else self._polling_loop_sdl
+            self._thread = threading.Thread(target=target, daemon=True, name="GamepadWorker")
             self._thread.start()
 
     def stop(self):
@@ -295,33 +313,59 @@ class GamepadManager:
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=0.5)
         self._thread = None
+        self._close_sdl_joystick()
+
+    def _sync_active_profile_dict(self):
+        """Update in-memory profile dict from current state without writing to disk."""
+        if self.active_profile_name in self.profiles:
+            self.profiles[self.active_profile_name] = self._export_current_state_to_dict()
+
+    def _notify_changed(self):
+        """Notify change listeners (e.g. for dirty status indicator)."""
+        for cb in self._change_callbacks:
+            try:
+                cb()
+            except Exception:
+                pass
+
+    def register_change_callback(self, cb: Callable[[], None]):
+        if cb not in self._change_callbacks:
+            self._change_callbacks.append(cb)
+
+    def unregister_change_callback(self, cb: Callable[[], None]):
+        if cb in self._change_callbacks:
+            self._change_callbacks.remove(cb)
 
     def set_gain(self, gain: float):
-        """Set pilot thrust gain multiplier (0.1 to 1.0)."""
+        """Set pilot thrust gain multiplier (0.1 to 1.0). Live responsive update."""
         with self.state.lock:
             self.state.gain = max(0.1, min(1.0, gain))
-        self.save_config()
+            self._sync_active_profile_dict()
+        self._notify_changed()
 
     def set_deadzone(self, pct: float):
-        """Set joystick deadzone fraction (0.00 to 0.40)."""
+        """Set joystick deadzone fraction (0.00 to 0.40). Live responsive update."""
         with self.state.lock:
             self.state.deadzone_pct = max(0.0, min(0.40, pct))
-        self.save_config()
+            self._sync_active_profile_dict()
+        self._notify_changed()
 
     def set_expo(self, expo: float):
-        """Set exponential response curve factor (0.0 to 0.80)."""
+        """Set exponential response curve factor (0.0 to 0.80). Live responsive update."""
         with self.state.lock:
             self.state.expo = max(0.0, min(0.80, expo))
-        self.save_config()
+            self._sync_active_profile_dict()
+        self._notify_changed()
 
     def set_inversion(self, axis: str, inverted: bool):
-        """Invert specified axis ('lx', 'ly', 'rx', 'ry')."""
+        """Invert specified axis ('lx', 'ly', 'rx', 'ry'). Live responsive update."""
         with self.state.lock:
             if axis == "lx": self.state.invert_lx = inverted
             elif axis == "ly": self.state.invert_ly = inverted
             elif axis == "rx": self.state.invert_rx = inverted
             elif axis == "ry": self.state.invert_ry = inverted
-        self.save_config()
+            self._sync_active_profile_dict()
+        self._notify_changed()
 
     def calibrate_centers(self):
         """Zero-tare current stick positions as center offsets to eliminate stick drift."""
@@ -330,7 +374,8 @@ class GamepadManager:
             self.state.center_offset_ly = self.state.raw_ly
             self.state.center_offset_rx = self.state.raw_rx
             self.state.center_offset_ry = self.state.raw_ry
-        self.save_config()
+            self._sync_active_profile_dict()
+        self._notify_changed()
 
     def reset_calibration(self):
         """Reset zero offsets, deadzone, expo, and inversions to defaults."""
@@ -345,26 +390,30 @@ class GamepadManager:
             self.state.invert_ly = False
             self.state.invert_rx = False
             self.state.invert_ry = False
-        self.save_config()
+            self._sync_active_profile_dict()
+        self._notify_changed()
 
     def set_wireless_profile(self, profile_key: str):
-        """Set the active wireless/DirectInput button profile (e.g. XBOX_BT, GENERIC_DINPUT, PLAYSTATION)."""
+        """Set active wireless/DirectInput button profile (e.g. XBOX_BT, GENERIC_DINPUT, PLAYSTATION)."""
         if profile_key in WIRELESS_PROFILES:
             with self.state.lock:
                 self.state.wireless_profile = profile_key
-            self.save_config()
+                self._sync_active_profile_dict()
+            self._notify_changed()
 
     def set_button_mapping(self, btn_name: str, action_id: str):
         """Assign an action to a button."""
         with self.state.lock:
             self.state.button_mappings[btn_name] = action_id
-        self.save_config()
+            self._sync_active_profile_dict()
+        self._notify_changed()
 
     def reset_mappings_to_default(self):
         """Reset all button mappings to standard ArduSub assignments."""
         with self.state.lock:
             self.state.button_mappings = dict(DEFAULT_BUTTON_MAPPINGS)
-        self.save_config()
+            self._sync_active_profile_dict()
+        self._notify_changed()
 
     def register_profile_callback(self, cb: Callable[[str], None]):
         if cb not in self._profile_callbacks:
@@ -388,6 +437,39 @@ class GamepadManager:
     def get_active_profile_name(self) -> str:
         with self.state.lock:
             return self.active_profile_name
+
+    def is_dirty(self) -> bool:
+        """Returns True if in-memory active profile or profile list differs from saved disk snapshot."""
+        with self.state.lock:
+            if not self._saved_profiles:
+                return False
+            if self.active_profile_name not in self._saved_profiles:
+                return True
+            curr = self._export_current_state_to_dict()
+            saved = self._saved_profiles.get(self.active_profile_name, {})
+            if curr != saved:
+                return True
+            if self.active_profile_name != self._saved_active_profile:
+                return True
+            if set(self.profiles.keys()) != set(self._saved_profiles.keys()):
+                return True
+            return False
+
+    def reload_saved(self) -> bool:
+        """Discard in-memory modifications and reload the last saved profile configuration from snapshot."""
+        with self.state.lock:
+            if not self._saved_profiles or self.active_profile_name not in self._saved_profiles:
+                return False
+            saved_data = copy.deepcopy(self._saved_profiles[self.active_profile_name])
+            self.profiles[self.active_profile_name] = copy.deepcopy(saved_data)
+            self._apply_dict_to_state(saved_data)
+        self._notify_profile_changed()
+        self._notify_changed()
+        return True
+
+    def revert_to_saved(self) -> bool:
+        """Alias for reload_saved()."""
+        return self.reload_saved()
 
     def _export_current_state_to_dict(self) -> Dict[str, Any]:
         """Convert current self.state into a profile dictionary."""
@@ -426,20 +508,22 @@ class GamepadManager:
             if k in self.state.button_mappings:
                 self.state.button_mappings[k] = v
 
-    def set_active_profile(self, profile_name: str, notify: bool = True) -> bool:
-        """Switch active profile, load its values into state, and persist active selection."""
+    def set_active_profile(self, profile_name: str, notify: bool = True, save: bool = True) -> bool:
+        """Switch active profile and load its values into state."""
         with self.state.lock:
             if profile_name not in self.profiles:
                 return False
             self.active_profile_name = profile_name
             self._apply_dict_to_state(self.profiles[profile_name])
-        self.save_config()
+        if save:
+            self.save_config()
         if notify:
             self._notify_profile_changed()
+        self._notify_changed()
         return True
 
-    def create_profile(self, profile_name: str, copy_from_active: bool = True) -> bool:
-        """Create a new profile, make it active, and save."""
+    def create_profile(self, profile_name: str, copy_from_active: bool = True, save: bool = True) -> bool:
+        """Create a new profile and make it active."""
         clean_name = profile_name.strip()
         if not clean_name:
             return False
@@ -463,11 +547,14 @@ class GamepadManager:
                     "button_mappings": dict(DEFAULT_BUTTON_MAPPINGS),
                 }
             self.active_profile_name = clean_name
-        self.save_config()
+            self._apply_dict_to_state(self.profiles[clean_name])
+        if save:
+            self.save_config()
         self._notify_profile_changed()
+        self._notify_changed()
         return True
 
-    def delete_profile(self, profile_name: str) -> bool:
+    def delete_profile(self, profile_name: str, save: bool = True) -> bool:
         """Delete profile (cannot delete if it is the only profile)."""
         with self.state.lock:
             if len(self.profiles) <= 1:
@@ -478,12 +565,14 @@ class GamepadManager:
             if self.active_profile_name == profile_name:
                 self.active_profile_name = list(self.profiles.keys())[0]
                 self._apply_dict_to_state(self.profiles[self.active_profile_name])
-        self.save_config()
+        if save:
+            self.save_config()
         self._notify_profile_changed()
+        self._notify_changed()
         return True
 
-    def save_config(self):
-        """Persist multi-profile calibration & button mappings to JSON file."""
+    def save_config(self) -> bool:
+        """Persist multi-profile calibration & button mappings to JSON file atomically."""
         try:
             with self.state.lock:
                 # Update current active profile in dict
@@ -497,19 +586,33 @@ class GamepadManager:
                     "active_profile": self.active_profile_name,
                     "profiles": self.profiles
                 }
-            with open(self._config_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except Exception:
-            pass
+                # Update saved snapshot
+                self._saved_profiles = copy.deepcopy(self.profiles)
+                self._saved_active_profile = self.active_profile_name
 
-    def load_config(self):
+            # Atomic file write
+            tmp_file = f"{self._config_file}.tmp"
+            with open(tmp_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            if os.path.exists(self._config_file):
+                os.replace(tmp_file, self._config_file)
+            else:
+                os.rename(tmp_file, self._config_file)
+
+            self._notify_changed()
+            return True
+        except Exception:
+            return False
+
+    def load_config(self) -> bool:
         """Load multi-profile calibration & mappings from JSON file if available."""
         if not os.path.exists(self._config_file):
             with self.state.lock:
                 self.profiles = {"Default": self._export_current_state_to_dict()}
                 self.active_profile_name = "Default"
             self.save_config()
-            return
+            return True
+
         try:
             with open(self._config_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -544,12 +647,229 @@ class GamepadManager:
                     self.active_profile_name = "Default"
 
                 self._apply_dict_to_state(self.profiles[self.active_profile_name])
+                self._saved_profiles = copy.deepcopy(self.profiles)
+                self._saved_active_profile = self.active_profile_name
 
             # Re-save in new multi-profile format if it was legacy
             if "profiles" not in data:
                 self.save_config()
+            self._notify_changed()
+            return True
         except Exception:
-            pass
+            # Backup corrupted file and initialize defaults
+            try:
+                bak_path = f"{self._config_file}.bak"
+                if os.path.exists(self._config_file):
+                    os.replace(self._config_file, bak_path)
+            except Exception:
+                pass
+            with self.state.lock:
+                self.profiles = {"Default": self._export_current_state_to_dict()}
+                self.active_profile_name = "Default"
+            self.save_config()
+            return False
+
+    # ------------------------------------------------------- SDL backend
+    def _close_sdl_joystick(self):
+        if self._sdl_joystick is not None:
+            try:
+                self._sdl_joystick.quit()
+            except Exception:
+                pass
+        self._sdl_joystick = None
+        self._sdl_name = ""
+
+    def _open_sdl_joystick(self):
+        """Pick the preferred controller by name, then index, then first."""
+        pygame = getattr(self, "_pygame", None)
+        if pygame is None:
+            return None
+        devices = []
+        for index in range(pygame.joystick.get_count()):
+            try:
+                joystick = pygame.joystick.Joystick(index)
+                joystick.init()
+                devices.append(joystick)
+            except Exception:
+                continue
+        if not devices:
+            return None
+        chosen = None
+        wanted = self.preferred_name.strip().lower()
+        if wanted:
+            for joystick in devices:
+                if wanted in joystick.get_name().lower():
+                    chosen = joystick
+                    break
+        if chosen is None:
+            if 0 <= self.device_index < len(devices):
+                chosen = devices[self.device_index]
+            else:
+                chosen = devices[0]
+        for joystick in devices:
+            if joystick is not chosen:
+                try:
+                    joystick.quit()
+                except Exception:
+                    pass
+        self._sdl_joystick = chosen
+        self._sdl_name = chosen.get_name()
+        return chosen
+
+    def _polling_loop_sdl(self):
+        """SDL/pygame polling loop used on Linux (Jetson) and other hosts."""
+        os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
+        os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+        try:
+            import pygame
+            if not pygame.display.get_init():
+                pygame.display.init()
+            if not pygame.joystick.get_init():
+                pygame.joystick.init()
+            self._pygame = pygame
+        except Exception:
+            self._mark_disconnected()
+            return
+
+        last_scan = 0.0
+        while self.running:
+            try:
+                pygame.event.pump()
+                if self._sdl_joystick is None:
+                    now = time.monotonic()
+                    if now - last_scan >= 1.0:
+                        last_scan = now
+                        self._open_sdl_joystick()
+                    if self._sdl_joystick is None:
+                        self._mark_disconnected()
+                        time.sleep(0.02)
+                        continue
+                self._parse_sdl(self._sdl_joystick)
+            except Exception:
+                self._close_sdl_joystick()
+                self._mark_disconnected()
+                time.sleep(0.1)
+            time.sleep(0.02)
+
+    def _parse_sdl(self, joystick):
+        """Read one SDL joystick sample into the shared GamepadState."""
+        name = joystick.get_name()
+        axes = [
+            float(joystick.get_axis(i)) for i in range(joystick.get_numaxes())
+        ]
+        raw_lx = int((axes[0] if len(axes) > 0 else 0.0) * 32767)
+        # SDL reports stick up as -1; invert so UP is positive like XInput.
+        raw_ly = int(-(axes[1] if len(axes) > 1 else 0.0) * 32767)
+        raw_rx = int((axes[2] if len(axes) > 2 else 0.0) * 32767)
+        raw_ry = int(-(axes[3] if len(axes) > 3 else 0.0) * 32767)
+        lt = int(max(0.0, min(1.0, ((axes[4] if len(axes) > 4 else -1.0) + 1.0) / 2.0)) * 1000)
+        rt = int(max(0.0, min(1.0, ((axes[5] if len(axes) > 5 else -1.0) + 1.0) / 2.0)) * 1000)
+
+        with self.state.lock:
+            dz = self.state.deadzone_pct
+            expo = self.state.expo
+            inv_lx = self.state.invert_lx
+            inv_ly = self.state.invert_ly
+            inv_rx = self.state.invert_rx
+            inv_ry = self.state.invert_ry
+            off_lx = self.state.center_offset_lx
+            off_ly = self.state.center_offset_ly
+            off_rx = self.state.center_offset_rx
+            off_ry = self.state.center_offset_ry
+            profile = self.state.wireless_profile
+
+        lx = self._normalize_stick_calibrated(raw_lx, off_lx, inv_lx, dz, expo)
+        ly = self._normalize_stick_calibrated(raw_ly, off_ly, inv_ly, dz, expo)
+        rx = self._normalize_stick_calibrated(raw_rx, off_rx, inv_rx, dz, expo)
+        ry = self._normalize_stick_calibrated(raw_ry, off_ry, inv_ry, dz, expo)
+
+        pressed = [
+            bool(joystick.get_button(i)) for i in range(joystick.get_numbuttons())
+        ]
+
+        def button(index: int) -> bool:
+            return index < len(pressed) and pressed[index]
+
+        lowered = name.lower()
+        ps_hint = any(
+            hint in lowered
+            for hint in ("playstation", "ps4", "ps5", "dualshock", "dualsense", "wireless controller")
+        )
+        if ps_hint:
+            playstation = True
+        elif "xbox" in lowered or "xinput" in lowered:
+            playstation = False
+        else:
+            playstation = profile == "PLAYSTATION"
+        if playstation:
+            btn_states = {
+                "btn_a": button(0),   # Cross
+                "btn_b": button(1),   # Circle
+                "btn_x": button(2),   # Square
+                "btn_y": button(3),   # Triangle
+                "btn_lb": button(4),
+                "btn_rb": button(5),
+                "btn_back": button(8),  # Share
+                "btn_start": button(9),  # Options
+                "btn_l3": button(10),
+                "btn_r3": button(11),
+            }
+        else:
+            btn_states = {
+                "btn_a": button(0),
+                "btn_b": button(1),
+                "btn_x": button(2),
+                "btn_y": button(3),
+                "btn_lb": button(4),
+                "btn_rb": button(5),
+                "btn_back": button(6),
+                "btn_start": button(7),
+                "btn_l3": button(8),
+                "btn_r3": button(9),
+            }
+
+        dp_up = dp_down = dp_left = dp_right = False
+        if joystick.get_numhats() > 0:
+            hat_x, hat_y = joystick.get_hat(0)
+            dp_up = hat_y > 0
+            dp_down = hat_y < 0
+            dp_left = hat_x < 0
+            dp_right = hat_x > 0
+        btn_states.update({
+            "dpad_up": dp_up,
+            "dpad_down": dp_down,
+            "dpad_left": dp_left,
+            "dpad_right": dp_right,
+        })
+
+        ardusub_mask = 0
+        for bit, key in enumerate((
+            "btn_a", "btn_b", "btn_x", "btn_y", "btn_lb", "btn_rb",
+            "btn_back", "btn_start", "btn_l3", "btn_r3",
+            "dpad_up", "dpad_down", "dpad_left", "dpad_right",
+        )):
+            if btn_states[key]:
+                ardusub_mask |= (1 << bit)
+
+        self._check_button_edges(btn_states)
+        with self.state.lock:
+            self.state.connected = True
+            self.state.controller_name = name
+            self.state.backend = "SDL (Linux/Gamepad)"
+            self.state.last_update_time = time.time()
+            self.state.raw_lx = raw_lx
+            self.state.raw_ly = raw_ly
+            self.state.raw_rx = raw_rx
+            self.state.raw_ry = raw_ry
+            self.state.axis_lx = lx
+            self.state.axis_ly = ly
+            self.state.axis_rx = rx
+            self.state.axis_ry = ry
+            self.state.trigger_lt = lt
+            self.state.trigger_rt = rt
+            for key, value in btn_states.items():
+                setattr(self.state, key, value)
+            self.state.buttons_bitmask = ardusub_mask
 
     def _normalize_stick_calibrated(
         self,

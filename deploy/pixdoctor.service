@@ -1,0 +1,18 @@
+[Unit]
+Description=PixDoctorV2 ROV control GUI
+After=graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+# Change User and paths to match the Jetson account.
+User=jetson
+WorkingDirectory=/opt/PixDoctorV2
+Environment=DISPLAY=:0
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/bin/python3 /opt/PixDoctorV2/main.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

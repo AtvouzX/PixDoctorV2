@@ -6,6 +6,7 @@ and supports standard ArduPilot .param file export and import.
 
 import os
 import time
+import threading
 from typing import Dict, Any, List, Optional
 from core.ardusub_defs import KEY_PARAMETERS
 
@@ -45,6 +46,9 @@ class ParameterManager:
 
     def __init__(self):
         self._params: Dict[str, ParameterItem] = {}
+        self._lock = threading.RLock()
+        # Names reported by the vehicle (pre-populated defaults are not proof).
+        self.received = set()
         # Pre-populate known key parameters with default values
         for name, meta in KEY_PARAMETERS.items():
             self._params[name] = ParameterItem(name, float(meta["default"]))
@@ -52,14 +56,16 @@ class ParameterManager:
     def update_param(self, name: str, value: float, param_type: int = 0):
         """Update or insert a parameter received from MAVLink PARAM_VALUE."""
         name = name.strip()
-        if name in self._params:
-            p = self._params[name]
-            p.original_value = value
-            p.value = value
-            p.dirty = False
-            p.param_type = param_type
-        else:
-            self._params[name] = ParameterItem(name, value, param_type)
+        with self._lock:
+            self.received.add(name)
+            if name in self._params:
+                p = self._params[name]
+                p.original_value = value
+                p.value = value
+                p.dirty = False
+                p.param_type = param_type
+            else:
+                self._params[name] = ParameterItem(name, value, param_type)
 
     def get_param(self, name: str, default: Optional[float] = None) -> Optional[ParameterItem]:
         return self._params.get(name, None)
@@ -77,7 +83,17 @@ class ParameterManager:
             self._params[name] = p
 
     def get_all(self) -> Dict[str, ParameterItem]:
-        return dict(self._params)
+        with self._lock:
+            return dict(self._params)
+
+    def get_received_values(self) -> Dict[str, float]:
+        """Values the vehicle actually reported (excludes local defaults)."""
+        with self._lock:
+            return {
+                name: self._params[name].value
+                for name in self.received
+                if name in self._params
+            }
 
     def get_dirty_params(self) -> List[ParameterItem]:
         return [p for p in self._params.values() if p.dirty]

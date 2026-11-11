@@ -155,7 +155,7 @@ class AutoDetector:
                         probe_candidate = amb_dev
 
                 # Auto-connect Pixhawk if disconnected
-                if not self.mav_mgr.is_connected() and pixhawk_candidate and not self.mav_mgr.state.is_sim:
+                if not self.mav_mgr.is_connected() and pixhawk_candidate:
                     self._notify(f"[Auto-Detect] Detected Pixhawk candidate on {pixhawk_candidate}. Connecting...", "INFO")
                     success = self.mav_mgr.connect(pixhawk_candidate, baudrate=115200)
                     if not success:

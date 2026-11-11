@@ -110,18 +110,6 @@ class TestPixDoctorV2Core(unittest.TestCase):
         gm.set_gain(0.50)
         self.assertEqual(gm.state.gain, 0.50)
 
-    def test_mock_sim_engine(self):
-        """Verify offline simulation engine generates packets when activated."""
-        received = []
-        mm = MavlinkManager()
-        mm.connect("MOCK")
-        time.sleep(0.3)
-        snap = mm.state.get_snapshot()
-        self.assertTrue(snap["connected"])
-        self.assertTrue(snap["is_sim"])
-        self.assertIn("ArduSub", snap["firmware"])
-        mm.disconnect()
-
     def test_motor_test_streamer(self):
         """Verify QGC-style 20Hz continuous motor test streamer."""
         mm = MavlinkManager()

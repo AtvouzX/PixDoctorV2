@@ -1,0 +1,43 @@
+# PixDoctorV2 flight-control configuration.
+# Regenerated with comments if deleted. Gamepad calibration lives in
+# gamepad_config.json; this file covers the MAVLink link, control loop,
+# failsafes and claw wiring.
+
+[link]
+# 1) Jetson via mavlink-router: udpin:0.0.0.0:14550
+# 2) Jetson directly on Pixhawk USB: /dev/ttyACM0 (115200) or the COM port
+#    on Windows. Serial endpoints ignore the UDP-only settings below.
+# 3) Push to a remote router: udpout:192.168.1.50:14550
+endpoint = "udpin:0.0.0.0:14550"
+source_system = 255
+source_component = 191
+control_hz = 20
+heartbeat_hz = 1
+link_timeout_s = 3.0
+gamepad_timeout_s = 0.25
+gamepad_disarm_s = 1.0
+# Connect to endpoint on startup. Set false to use serial auto-detect only.
+auto_connect = true
+
+[control]
+# Initial FLY toggle state. Keep false so editing parameters never spins props.
+enabled = false
+
+[claw]
+# Torpedosub BTS7960 claw. Button bits in MANUAL_CONTROL map to BTN0..2:
+# close_bit -> BTN0_FUNCTION=140, open_bit -> 139, stop_bit -> 141.
+enabled = true
+close_bit = 0
+open_bit = 1
+stop_bit = 2
+press_ms = 150
+# Refuse to arm until the firmware grip parameters match. Use the Params view
+# to write them; set false on SITL where GRIP_* is absent.
+require_config_for_arm = true
+
+[claw.required]
+GRIP_ENABLE = 1
+GRIP_TYPE = 3
+BTN0_FUNCTION = 140
+BTN1_FUNCTION = 139
+BTN2_FUNCTION = 141

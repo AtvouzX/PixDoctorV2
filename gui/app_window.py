@@ -40,7 +40,9 @@ from core.nano_probe_manager import NanoProbeManager
 from core.gamepad_manager import GamepadManager
 from core.param_manager import ParameterManager
 from core.auto_detector import AutoDetector
-from core.motor_matrix_manager import MotorMatrixManager
+from core.claw import config_errors
+from core.rov_config import load_rov_config
+from core.rov_control import RovControl
 
 
 class PixDoctorApp(tk.Tk):
@@ -62,17 +64,6 @@ class PixDoctorApp(tk.Tk):
         self._params_dirty = False
         self.param_mgr = ParameterManager()
 
-        # Load Motor Matrix Configuration from motor_matrix_config.json
-        self.matrix_mgr = MotorMatrixManager.get_instance()
-        self.matrix_mgr.load_from_file()
-
-        # Synchronize loaded motor matrix and directions into parameter manager
-        init_frame_id = self.matrix_mgr.get_current_frame_id()
-        self.param_mgr.set_value("FRAME_CONFIG", float(init_frame_id))
-        for m_idx in range(1, 9):
-            d_val = self.matrix_mgr.motor_directions.get(m_idx, 1)
-            self.param_mgr.set_value(f"MOT_{m_idx}_DIRECTION", float(d_val))
-
         self.mav_mgr = MavlinkManager(
             log_callback=self._log_event,
             param_callback=self._on_param_received
@@ -83,6 +74,24 @@ class PixDoctorApp(tk.Tk):
         self.gamepad_mgr = GamepadManager(action_callback=self._on_gamepad_action)
         self._cam_tilt_pwm: int = 1500
         self._lights_pwm: int = 1100
+
+        # Flight-control config (config.toml) ported from eltorpedo
+        try:
+            self.rov_cfg = load_rov_config()
+        except Exception as exc:
+            from core.rov_config import RovConfig
+            self.rov_cfg = RovConfig()
+            self._log_event(f"config.toml unreadable, using defaults: {exc}", "WARN")
+        self.rov_ctrl = RovControl(
+            self.rov_cfg.link,
+            self.rov_cfg.control,
+            self.rov_cfg.claw,
+            self.mav_mgr,
+            self.gamepad_mgr,
+            log_callback=self._log_event,
+        )
+        self.mav_mgr.heartbeat_interval = 1.0 / max(0.1, self.rov_cfg.link.heartbeat_hz)
+        self.mav_mgr.state.heartbeat_timeout = self.rov_cfg.link.link_timeout_s
 
         # 2. Auto-Detector (Default ON: scans ports and auto-connects)
         self.auto_detector = AutoDetector(
@@ -95,19 +104,19 @@ class PixDoctorApp(tk.Tk):
         self._build_top_status_strip()
         self._build_main_body()
 
-        # Ensure initial views are perfectly synchronized with loaded configs
-        if "summary" in self.views and hasattr(self.views["summary"], "hud"):
-            self.views["summary"].hud.set_frame_id(init_frame_id)
-        if "thrusters" in self.views and hasattr(self.views["thrusters"], "diagram"):
-            self.views["thrusters"].diagram.set_frame(init_frame_id)
-
         self._log_event(f"Loaded gamepad_config.json [Active Profile: {self.gamepad_mgr.get_active_profile_name()}]", "INFO")
-        self._log_event(f"Loaded motor_matrix_config.json [Preset: {self.matrix_mgr.active_preset_name}, Frame: {init_frame_id}]", "INFO")
 
         # 4. Start Background Engines
         self._running = True
         self.gamepad_mgr.start()
+        if self.rov_cfg.link.auto_connect:
+            self.mav_mgr.connect(
+                self.rov_cfg.link.endpoint,
+                source_system=self.rov_cfg.link.source_system,
+                source_component=self.rov_cfg.link.source_component,
+            )
         self.auto_detector.start()
+        self.rov_ctrl.start()
 
         # 5. Kick off 20Hz UI Telemetry Refresh Loop
         self.after(50, self._ui_telemetry_tick)
@@ -166,6 +175,18 @@ class PixDoctorApp(tk.Tk):
 
         self.pill_mode = RetroPill(badge_frame, text="MANUAL", active=True)
         self.pill_mode.pack(side=tk.LEFT, padx=3)
+
+        self.pill_claw = RetroPill(badge_frame, text="CLAW: --", active=False)
+        self.pill_claw.pack(side=tk.LEFT, padx=3)
+
+        # FLY toggle: MANUAL_CONTROL stream is only active while this is on.
+        self.btn_fly = ttk.Button(
+            badge_frame,
+            text=f"FLY: {'ON' if self.rov_ctrl.enabled else 'OFF'}",
+            style="Invert.TButton" if self.rov_ctrl.enabled else "Retro.TButton",
+            command=self._toggle_fly
+        )
+        self.btn_fly.pack(side=tk.LEFT, padx=(6, 0))
 
         # Manual Link Dialog Button
         btn_conn = ttk.Button(
@@ -274,27 +295,6 @@ class PixDoctorApp(tk.Tk):
             btn.pack(fill=tk.X, pady=2)
             self.nav_buttons[key] = btn
 
-        # Bottom Sidebar Simulator Toggle (Default OFF)
-        sim_frame = tk.Frame(self.sidebar, bg=COLOR_SURFACE)
-        sim_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=(0, 4))
-
-        tk.Frame(sim_frame, bg=COLOR_BORDER, height=1).pack(fill=tk.X, pady=(0, 6))
-
-        self.sim_active = tk.BooleanVar(value=False)
-        self.chk_sim = tk.Checkbutton(
-            sim_frame,
-            text="OFFLINE SIMULATOR",
-            variable=self.sim_active,
-            command=self._toggle_sim,
-            bg=COLOR_SURFACE,
-            fg=COLOR_TEXT_DIM,
-            selectcolor=COLOR_BG,
-            activebackground=COLOR_SURFACE,
-            activeforeground=COLOR_TEXT_WHITE,
-            font=FONT_SMALL
-        )
-        self.chk_sim.pack(anchor="w")
-
         # Select Default View
         self.active_view_key = None
         self.switch_view("summary")
@@ -303,6 +303,16 @@ class PixDoctorApp(tk.Tk):
         """Switch workspace content to selected view."""
         if view_key not in self.views:
             return
+
+        if view_key == self.active_view_key:
+            return
+
+        # Check if the active view has unsaved changes and prompt pilot
+        if self.active_view_key and self.active_view_key in self.views:
+            current_view = self.views[self.active_view_key]
+            if hasattr(current_view, "confirm_leave") and callable(current_view.confirm_leave):
+                if not current_view.confirm_leave():
+                    return  # Abort tab switch
 
         # Hide old view
         if self.active_view_key and self.active_view_key in self.views:
@@ -354,6 +364,13 @@ class PixDoctorApp(tk.Tk):
             # Mode Badge
             self.pill_mode.set_state(active=True, text=mav_snap["flight_mode_name"])
 
+            # Claw Badge (state is firmware STATUSTEXT only)
+            claw_state = mav_snap.get("claw_state", "UNKNOWN")
+            self.pill_claw.set_state(
+                active=claw_state not in ("UNKNOWN", "UNAVAILABLE"),
+                text=f"CLAW: {claw_state}",
+            )
+
             # 2. Dispatch to Active Views
             if self.active_view_key == "summary":
                 self.views["summary"].update_telemetry(mav_snap, pad_snap, nano_snap)
@@ -398,8 +415,7 @@ class PixDoctorApp(tk.Tk):
         self._log_event(f"[GAMEPAD ACTION] Triggered: {action}", "INFO")
 
         if action == "TOGGLE_ARM":
-            curr_armed = self.mav_mgr.state.armed
-            self.mav_mgr.arm(not curr_armed)
+            self._request_arm(not self.mav_mgr.state.armed)
         elif action == "DISARM":
             self.mav_mgr.arm(False)
         elif action == "CYCLE_MODE":
@@ -439,15 +455,53 @@ class PixDoctorApp(tk.Tk):
         elif action == "LIGHTS_OFF":
             self._lights_pwm = 1100
             self.mav_mgr.set_servo_override(11, 1100)
+        elif action == "CLAW_GRAB":
+            self.rov_ctrl.press_claw("close")
+        elif action == "CLAW_RELEASE":
+            self.rov_ctrl.press_claw("open")
+        elif action == "CLAW_STOP":
+            self.rov_ctrl.press_claw("stop")
 
-    def _toggle_sim(self):
-        """Toggle offline mock simulator."""
-        if self.sim_active.get():
-            self.auto_detector.stop()
-            self.mav_mgr.connect("MOCK")
-        else:
-            self.mav_mgr.disconnect()
-            self.auto_detector.start()
+    def _claw_errors(self):
+        """Claw parameter mismatches using only values the vehicle reported."""
+        if not (self.rov_cfg.claw.enabled and self.rov_cfg.claw.require_config_for_arm):
+            return []
+        return config_errors(
+            self.param_mgr.get_received_values(),
+            self.rov_cfg.claw.required,
+        )
+
+    def _request_arm(self, arm: bool):
+        """Gate arming on link health and the claw parameter check."""
+        if not self.mav_mgr.state.connected:
+            self._log_event("Cannot arm: no MAVLink link", "WARN")
+            return
+        if arm:
+            errors = self._claw_errors()
+            if errors:
+                self._log_event(
+                    "Cannot arm: claw not configured (" + "; ".join(errors) + ")",
+                    "WARN",
+                )
+                return
+        self.mav_mgr.arm(arm)
+
+    def _toggle_fly(self):
+        """Enable/disable the 20 Hz MANUAL_CONTROL stream."""
+        enabled = not self.rov_ctrl.enabled
+        if not enabled and self.mav_mgr.state.armed:
+            if not messagebox.askyesno(
+                "Disable FLY",
+                "The vehicle is armed.\n\n"
+                "Disabling FLY stops stick input. Disarm now?",
+            ):
+                return
+            self.mav_mgr.arm(False)
+        self.rov_ctrl.set_enabled(enabled)
+        self.btn_fly.config(
+            text=f"FLY: {'ON' if enabled else 'OFF'}",
+            style="Invert.TButton" if enabled else "Retro.TButton",
+        )
 
     def _show_port_dialog(self):
         """Manual COM port and connection selector dialog."""
@@ -559,14 +613,30 @@ class PixDoctorApp(tk.Tk):
                 pass
 
     def _on_closing(self):
-        """Clean shutdown of all threads, ensuring configurations are persisted."""
-        self._running = False
+        """Clean shutdown of all threads with unsaved modifications verification."""
+        # Check active view for unsaved modifications
+        if self.active_view_key and self.active_view_key in self.views:
+            current_view = self.views[self.active_view_key]
+            if hasattr(current_view, "confirm_leave") and callable(current_view.confirm_leave):
+                if not current_view.confirm_leave():
+                    return  # Abort closing
+
+        # Persist gamepad calibration before tearing down the threads.
         try:
             self.gamepad_mgr.save_config()
-            MotorMatrixManager.get_instance().save_to_file()
         except Exception:
             pass
 
+        # A live vehicle must never be left armed by an app exit.
+        if self.mav_mgr.state.armed:
+            if not messagebox.askyesno(
+                "Vehicle Armed",
+                "The vehicle is armed.\n\nSend neutral axes and disarm before exiting?",
+            ):
+                return
+
+        self._running = False
+        self.rov_ctrl.stop(safe=True)
         self.auto_detector.stop()
         self.gamepad_mgr.stop()
         self.mav_mgr.disconnect()

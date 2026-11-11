@@ -84,6 +84,8 @@ class ControllerView(tk.Frame):
 
         self._build_ui()
         self.gamepad_mgr.register_profile_callback(lambda name: self.after(0, self._sync_controls_from_manager))
+        self.gamepad_mgr.register_change_callback(lambda: self.after(0, self._update_dirty_status))
+        self._update_dirty_status()
 
     def _build_ui(self):
         # 1. Top Section: Interactive HUD Visualizer
@@ -171,9 +173,17 @@ class ControllerView(tk.Frame):
         ttk.Button(
             prof_bar,
             text="SAVE",
-            style="Retro.TButton",
+            style="Invert.TButton",
             width=6,
             command=self._save_active_profile
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            prof_bar,
+            text="LOAD SAVED",
+            style="Retro.TButton",
+            width=11,
+            command=self._reload_saved_profile
         ).pack(side=tk.LEFT, padx=2)
 
         ttk.Button(
@@ -615,12 +625,93 @@ class ControllerView(tk.Frame):
         self.inv_ry_var.set(self.gamepad_mgr.state.invert_ry)
         self._refresh_mapping_tree()
         self.overlay.redraw()
+        self._update_dirty_status()
+
+    def _update_dirty_status(self):
+        """Update profile status indicator to reflect clean vs unsaved modifications."""
+        curr_name = self.gamepad_mgr.get_active_profile_name()
+        if self.gamepad_mgr.is_dirty():
+            self.lbl_profile_status.config(text=f"[ Profile: {curr_name} (MODIFIED) ]", fg="#eab308")
+        else:
+            self.lbl_profile_status.config(text=f"[ Profile: {curr_name} (Saved) ]", fg="#00ff88")
 
     def _on_profile_selected(self, event=None):
-        name = self.profile_var.get()
-        if self.gamepad_mgr.set_active_profile(name, notify=False):
+        target_name = self.profile_var.get()
+        curr_name = self.gamepad_mgr.get_active_profile_name()
+        if target_name == curr_name:
+            return
+
+        # If currently active profile has unsaved modifications, prompt pilot
+        if self.gamepad_mgr.is_dirty():
+            from gui.widgets.discard_dialog import show_discard_dialog
+            choice = show_discard_dialog(
+                self,
+                title="Unsaved Profile Changes",
+                message=(
+                    f"You have unsaved changes in profile '{curr_name}'.\n\n"
+                    f"Would you like to save changes before switching to '{target_name}', "
+                    "or discard them to restore the saved profile?"
+                ),
+                item_name=f"Profile '{curr_name}'"
+            )
+            if choice == "cancel":
+                self.profile_var.set(curr_name)
+                return
+            elif choice == "save":
+                self.gamepad_mgr.save_config()
+            elif choice == "discard":
+                self.gamepad_mgr.reload_saved()
+
+        if self.gamepad_mgr.set_active_profile(target_name, notify=False):
             self._sync_controls_from_manager()
-            self.lbl_profile_status.config(text=f"[ Loaded: {name} ]", fg="#00ff88")
+            self._update_dirty_status()
+
+    def _reload_saved_profile(self):
+        """Reload the saved configuration from file for the active profile."""
+        curr_name = self.gamepad_mgr.get_active_profile_name()
+        if self.gamepad_mgr.reload_saved():
+            self._sync_controls_from_manager()
+            self._update_dirty_status()
+            messagebox.showinfo("Profile Loaded", f"Reloaded saved configuration for '{curr_name}' from gamepad_config.json", parent=self)
+
+    def is_dirty(self) -> bool:
+        """Returns True if active gamepad profile has unsaved changes."""
+        return self.gamepad_mgr.is_dirty()
+
+    def confirm_leave(self) -> bool:
+        """
+        Called when pilot attempts to navigate away from the Gamepad / Controller tab.
+        If there are unsaved modifications, prompts with DiscardDialog:
+        - Save: saves active profile to disk and allows navigation (returns True)
+        - Discard: reloads last saved profile from disk and allows navigation (returns True)
+        - Cancel: aborts navigation and stays on Controller tab (returns False)
+        """
+        if not self.is_dirty():
+            return True
+
+        curr_name = self.gamepad_mgr.get_active_profile_name()
+        from gui.widgets.discard_dialog import show_discard_dialog
+        choice = show_discard_dialog(
+            self,
+            title="Unsaved Gamepad Changes",
+            message=(
+                f"You have unsaved changes in Gamepad profile '{curr_name}'.\n\n"
+                "Would you like to save your modifications before leaving the tab, "
+                "or discard them to restore your last saved profile?"
+            ),
+            item_name=f"Gamepad Profile '{curr_name}'"
+        )
+        if choice == "save":
+            self.gamepad_mgr.save_config()
+            self._update_dirty_status()
+            return True
+        elif choice == "discard":
+            self.gamepad_mgr.reload_saved()
+            self._sync_controls_from_manager()
+            self._update_dirty_status()
+            return True
+        else:
+            return False
 
     def _create_new_profile(self):
         from tkinter import simpledialog
@@ -630,29 +721,29 @@ class ControllerView(tk.Frame):
             if clean:
                 self.gamepad_mgr.create_profile(clean, copy_from_active=True)
                 self._sync_controls_from_manager()
-                self.lbl_profile_status.config(text=f"[ Created: {clean} ]", fg="#00ff88")
+                self._update_dirty_status()
 
     def _save_active_profile(self):
         self.gamepad_mgr.save_config()
         curr_name = self.gamepad_mgr.get_active_profile_name()
-        self.lbl_profile_status.config(text=f"[ Saved: {curr_name} ]", fg="#00ff88")
-        messagebox.showinfo("Profile Saved", f"Profile '{curr_name}' saved to gamepad_config.json")
+        self._update_dirty_status()
+        messagebox.showinfo("Profile Saved", f"Profile '{curr_name}' saved to gamepad_config.json", parent=self)
 
     def _delete_active_profile(self):
         curr = self.gamepad_mgr.get_active_profile_name()
         if len(self.gamepad_mgr.get_profile_names()) <= 1:
-            messagebox.showwarning("Cannot Delete", "At least one profile must be retained.")
+            messagebox.showwarning("Cannot Delete", "At least one profile must be retained.", parent=self)
             return
-        if messagebox.askyesno("Confirm Delete", f"Delete gamepad profile '{curr}'?"):
+        if messagebox.askyesno("Confirm Delete", f"Delete gamepad profile '{curr}'?", parent=self):
             self.gamepad_mgr.delete_profile(curr)
             self._sync_controls_from_manager()
-            self.lbl_profile_status.config(text=f"[ Deleted: {curr} ]", fg=COLOR_TEXT_DIM)
+            self._update_dirty_status()
 
     def _on_wireless_profile_changed(self, event=None):
         w_prof = self.wireless_var.get()
         self.gamepad_mgr.set_wireless_profile(w_prof)
         self.overlay.redraw()
-        self.lbl_profile_status.config(text=f"[ Device Map: {w_prof} ]", fg="#00ff88")
+        self._update_dirty_status()
 
     def _save_config(self):
         self._save_active_profile()

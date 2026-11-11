@@ -237,11 +237,16 @@ LEAK_PINS = [
 
 # MAVLink Command Constants
 MAV_CMD_DO_MOTOR_TEST = 209
+MAV_CMD_DO_GRIPPER = 211
 MAV_CMD_PREFLIGHT_CALIBRATION = 241
 MAV_CMD_DO_START_MAG_CAL = 42424
 MAV_CMD_COMPONENT_ARM_DISARM = 400
 MAV_CMD_DO_SET_SERVO = 183
 MAV_CMD_DO_SET_RELAY = 181
+
+# Gripper Actions for MAV_CMD_DO_GRIPPER
+GRIPPER_ACTION_RELEASE = 0
+GRIPPER_ACTION_GRAB = 1
 
 # Standard ArduSub Parameters with Metadata for SimpleROV-4 & Pixhawk 2.4.8
 KEY_PARAMETERS = {
@@ -276,9 +281,17 @@ KEY_PARAMETERS = {
     "FLTMODE5": {"name": "FLTMODE5", "default": 1, "min": 0, "max": 25, "desc": "Flight Mode 5 (1 = ACRO)", "group": "Flight Modes"},
     "FLTMODE6": {"name": "FLTMODE6", "default": 9, "min": 0, "max": 25, "desc": "Flight Mode 6 (9 = SURFACE)", "group": "Flight Modes"},
     "RC_SPEED": {"name": "RC_SPEED", "default": 200, "min": 50, "max": 400, "desc": "Actuator Output Refresh Rate (Hz)", "group": "Actuators & RC"},
-    "SERVO10_FUNCTION": {"name": "SERVO10_FUNCTION", "default": 7, "min": 0, "max": 120, "desc": "AUX 2 Function (e.g. 7 = Mount Tilt)", "group": "Actuators & RC"},
-    "SERVO11_FUNCTION": {"name": "SERVO11_FUNCTION", "default": 12, "min": 0, "max": 120, "desc": "AUX 3 Function (e.g. 12 = Lumen Lights 1)", "group": "Actuators & RC"},
-    "SERVO12_FUNCTION": {"name": "SERVO12_FUNCTION", "default": 13, "min": 0, "max": 120, "desc": "AUX 4 Function (e.g. 13 = Lumen Lights 2)", "group": "Actuators & RC"},
+    "SERVO10_FUNCTION": {"name": "SERVO10_FUNCTION", "default": 7, "min": 0, "max": 192, "desc": "AUX 2 Function (e.g. 7 = Mount Tilt)", "group": "Actuators & RC"},
+    "SERVO11_FUNCTION": {"name": "SERVO11_FUNCTION", "default": 12, "min": 0, "max": 192, "desc": "AUX 3 Function (e.g. 12 = Lumen Lights 1)", "group": "Actuators & RC"},
+    "SERVO12_FUNCTION": {"name": "SERVO12_FUNCTION", "default": 13, "min": 0, "max": 192, "desc": "AUX 4 Function (e.g. 13 = Lumen Lights 2)", "group": "Actuators & RC"},
+    "FWD_IDLE": {"name": "FWD_IDLE", "default": 1000, "min": 800, "max": 2200, "desc": "Forward Unidirectional Motor Idle PWM (SimpleROV-4, TorpedoSub custom firmware)", "group": "Frame & Motors"},
+    "FWD_MAX": {"name": "FWD_MAX", "default": 2000, "min": 800, "max": 2200, "desc": "Forward Unidirectional Motor Max PWM (SimpleROV-4, TorpedoSub custom firmware)", "group": "Frame & Motors"},
+    "GRIP_ENABLE": {"name": "GRIP_ENABLE", "default": 1, "min": 0, "max": 1, "desc": "Enable Gripper / Claw subsystem", "group": "Gripper & Claw"},
+    "GRIP_TYPE": {"name": "GRIP_TYPE", "default": 3, "min": 0, "max": 3, "desc": "Gripper Type (0=None, 1=Servo, 2=EPM, 3=BTS7960 DC Claw)", "group": "Gripper & Claw"},
+    "GRIP_DC_STALL_MA": {"name": "GRIP_DC_STALL_MA", "default": 2000, "min": 0, "max": 20000, "desc": "DC Claw Stall Current Threshold in mA (0=Disabled)", "group": "Gripper & Claw"},
+    "GRIP_DC_OVRC_MA": {"name": "GRIP_DC_OVRC_MA", "default": 3000, "min": 0, "max": 30000, "desc": "DC Claw Overcurrent Limit in mA", "group": "Gripper & Claw"},
+    "GRIP_DC_TOUT_S": {"name": "GRIP_DC_TOUT_S", "default": 10, "min": 1, "max": 60, "desc": "DC Claw Movement Timeout in seconds", "group": "Gripper & Claw"},
+    "GRIP_DC_HOLD_PCT": {"name": "GRIP_DC_HOLD_PCT", "default": 0, "min": 0, "max": 100, "desc": "DC Claw Holding Duty Cycle % after grasp", "group": "Gripper & Claw"},
 }
 
 

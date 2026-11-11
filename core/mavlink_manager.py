@@ -17,7 +17,16 @@ from core.ardusub_defs import (
     MAV_CMD_DO_START_MAG_CAL,
     MAV_CMD_COMPONENT_ARM_DISARM,
 )
-from core.mock_sim import MockSimEngine
+from core.claw import ClawStatus, parse_statustext
+
+# Telemetry streams requested when the link comes up (message id, Hz).
+STREAMS = (
+    (mavutil.mavlink.MAVLINK_MSG_ID_ATTITUDE, 10.0),
+    (mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 5.0),
+    (mavutil.mavlink.MAVLINK_MSG_ID_BATTERY_STATUS, 1.0),
+    (mavutil.mavlink.MAVLINK_MSG_ID_SYS_STATUS, 1.0),
+    (mavutil.mavlink.MAVLINK_MSG_ID_HEARTBEAT, 1.0),
+)
 
 
 class VehicleState:
@@ -26,7 +35,6 @@ class VehicleState:
     def __init__(self):
         self.lock = threading.RLock()
         self.connected: bool = False
-        self.is_sim: bool = False
         self.link_type: str = "DISCONNECTED"
         self.port: str = ""
         self.baudrate: int = 115200
@@ -68,12 +76,13 @@ class VehicleState:
 
         # Actuator Outputs (MAIN 1..8 in microseconds)
         self.servo_raw: List[int] = [1500] * 8
+        # Torpedosub BTS7960 claw (state comes from STATUSTEXT only)
+        self.claw = ClawStatus()
 
     def get_snapshot(self) -> Dict[str, Any]:
         with self.lock:
             return {
                 "connected": self.connected,
-                "is_sim": self.is_sim,
                 "link_type": self.link_type,
                 "port": self.port,
                 "baudrate": self.baudrate,
@@ -96,6 +105,11 @@ class VehicleState:
                 "statustext": self.last_statustext,
                 "servo_raw": list(self.servo_raw),
                 "packet_rate_hz": self.message_rate_hz,
+                "claw_state": self.claw.state,
+                "claw_detail": self.claw.detail,
+                "claw_fault": self.claw.fault,
+                "claw_unavailable": self.claw.unavailable,
+                "claw_current_ma": self.claw.current_ma,
             }
 
 
@@ -114,6 +128,8 @@ class MavlinkManager:
         self.mav_conn: Optional[Any] = None
         self.running: bool = False
         self._thread: Optional[threading.Thread] = None
+        # GCS heartbeat period; config.toml [link] heartbeat_hz overrides it.
+        self.heartbeat_interval: float = 1.0
 
         # Motor Test Streaming Engine (QGroundControl-style 20Hz stream to prevent ArduSub timeout disarm)
         self._motor_stream_active: bool = False
@@ -121,9 +137,6 @@ class MavlinkManager:
         self._motor_stream_pwm: int = 1500
         self._motor_stream_lock = threading.Lock()
         self._motor_stream_thread: Optional[threading.Thread] = None
-
-        # Mock simulator engine (strictly default off)
-        self.mock_sim = MockSimEngine(callback=self._handle_sim_packet)
 
         self._packets_since_rate_calc = 0
         self._last_rate_time = time.time()
@@ -136,22 +149,15 @@ class MavlinkManager:
         with self.state.lock:
             return self.state.connected
 
-    def connect(self, port_or_conn_str: str, baudrate: int = 115200) -> bool:
-        """Connect to Pixhawk via Serial COM port or UDP string."""
+    def connect(
+        self,
+        port_or_conn_str: str,
+        baudrate: int = 115200,
+        source_system: int = 255,
+        source_component: int = 191,
+    ) -> bool:
+        """Connect to Pixhawk via serial port, mavlink-router UDP or SITL."""
         self.disconnect()
-
-        # Check if user requested mock simulation
-        if port_or_conn_str.upper() == "MOCK":
-            with self.state.lock:
-                self.state.connected = True
-                self.state.is_sim = True
-                self.state.link_type = "MOCK SIMULATOR"
-                self.state.port = "Virtual SITL"
-                self.state.baudrate = 0
-                self.state.firmware_name = "ArduSub 4.7.1 (SITL)"
-            self.mock_sim.start()
-            self.log("[MAVLink] Offline ArduSub 4.7.1 simulator activated", "INFO")
-            return True
 
         # Physical serial or UDP
         try:
@@ -159,21 +165,28 @@ class MavlinkManager:
             self.log(f"[MAVLink] Opening connection to {actual_target} @ {baudrate} baud...", "INFO")
 
             # mavutil connection
-            if actual_target.startswith("udp:"):
-                self.mav_conn = mavutil.mavlink_connection(actual_target)
+            if actual_target.startswith(("udpin:", "udpout:", "udpbcast:", "udp:")):
+                self.mav_conn = mavutil.mavlink_connection(
+                    actual_target,
+                    source_system=source_system,
+                    source_component=source_component,
+                )
+                link_type = "UDP"
             else:
                 self.mav_conn = mavutil.mavlink_connection(
                     actual_target,
                     baud=baudrate,
                     autoreconnect=True,
-                    timeout=1.0
+                    timeout=1.0,
+                    source_system=source_system,
+                    source_component=source_component,
                 )
+                link_type = "SERIAL"
 
             with self.state.lock:
                 self.state.port = actual_target
                 self.state.baudrate = baudrate
-                self.state.link_type = "SERIAL" if not actual_target.startswith("udp:") else "UDP"
-                self.state.is_sim = False
+                self.state.link_type = link_type
 
             self.running = True
             self._thread = threading.Thread(target=self._reader_worker, daemon=True, name="MavlinkReaderWorker")
@@ -191,7 +204,6 @@ class MavlinkManager:
         """Disconnect and stop threads."""
         self.running = False
         self._motor_stream_active = False
-        self.mock_sim.stop()
 
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=0.5)
@@ -210,17 +222,10 @@ class MavlinkManager:
 
         with self.state.lock:
             self.state.connected = False
-            self.state.is_sim = False
             self.state.link_type = "DISCONNECTED"
 
     def arm(self, arm_state: bool, force: bool = False):
         """Send arm / disarm command."""
-        if self.state.is_sim:
-            self.mock_sim.arm(arm_state)
-            with self.state.lock:
-                self.state.armed = arm_state
-            return
-
         if not self.mav_conn:
             return
 
@@ -239,13 +244,6 @@ class MavlinkManager:
 
     def set_flight_mode(self, mode_id: int):
         """Set ArduSub custom flight mode."""
-        if self.state.is_sim:
-            self.mock_sim.set_mode(mode_id)
-            with self.state.lock:
-                self.state.custom_mode = mode_id
-                self.state.flight_mode_name = FLIGHT_MODES.get(mode_id, {}).get("name", f"MODE_{mode_id}")
-            return
-
         if not self.mav_conn:
             return
 
@@ -285,7 +283,7 @@ class MavlinkManager:
         """
         last_safety_time = 0.0
         while self.running:
-            if self._motor_stream_active and self.mav_conn and self.state.connected and not self.state.is_sim:
+            if self._motor_stream_active and self.mav_conn and self.state.connected:
                 now = time.time()
                 if now - last_safety_time > 1.5:
                     self.set_safety_switch(True)
@@ -327,11 +325,6 @@ class MavlinkManager:
         if 0 <= idx < 8:
             with self.state.lock:
                 self.state.servo_raw[idx] = pwm_us
-
-        if self.state.is_sim:
-            if 0 <= idx < 8:
-                self.mock_sim.motor_pwms[idx] = pwm_us
-            return
 
         self.set_safety_switch(True)
         with self._motor_stream_lock:
@@ -375,11 +368,6 @@ class MavlinkManager:
             with self.state.lock:
                 self.state.servo_raw[idx] = pwm_us
 
-        if self.state.is_sim:
-            if 0 <= idx < 8:
-                self.mock_sim.motor_pwms[idx] = pwm_us
-            return
-
         if not self.mav_conn:
             return
 
@@ -407,10 +395,6 @@ class MavlinkManager:
         self.stop_motor_stream()
         with self.state.lock:
             self.state.servo_raw = [1500] * 8
-
-        if self.state.is_sim:
-            self.mock_sim.motor_pwms = [1500] * 8
-            return
 
         if not self.mav_conn:
             return
@@ -446,10 +430,6 @@ class MavlinkManager:
         """
         Send timed motor test pulse using 20Hz continuous streaming to prevent ArduSub timeout.
         """
-        if self.state.is_sim:
-            self.mock_sim.set_motor_test(motor_instance_1_based, throttle_pct, timeout_sec)
-            return
-
         target_pwm = int(1500 + (throttle_pct * 4.0))
         target_pwm = max(1000, min(2000, target_pwm))
 
@@ -504,56 +484,89 @@ class MavlinkManager:
         )
         self.log("[MAVLink] Triggered Onboard Compass Calibration", "INFO")
 
+    def control_gripper(self, grab: bool):
+        """
+        Send MAV_CMD_DO_GRIPPER command to open/release or close/grab the claw.
+        grab=True: GRIPPER_ACTION_GRAB (1)
+        grab=False: GRIPPER_ACTION_RELEASE (0)
+        """
+        if not self.mav_conn:
+            return
+        from core.ardusub_defs import MAV_CMD_DO_GRIPPER, GRIPPER_ACTION_GRAB, GRIPPER_ACTION_RELEASE
+        action = GRIPPER_ACTION_GRAB if grab else GRIPPER_ACTION_RELEASE
+        self.mav_conn.mav.command_long_send(
+            self.state.target_system,
+            self.state.target_component,
+            MAV_CMD_DO_GRIPPER,
+            0,
+            1,  # Gripper instance
+            action,
+            0, 0, 0, 0, 0
+        )
+        action_name = "GRAB" if grab else "RELEASE"
+        self.log(f"[MAVLink] Sent Gripper command: {action_name}", "INFO")
+
     def send_manual_control(self, x: int, y: int, z: int, r: int, buttons: int):
         """
         Send flight control commands to Pixhawk.
-        Dual-delivers via both MANUAL_CONTROL and RC_CHANNELS_OVERRIDE for 100% compatibility with ArduSub.
         x: Forward/Reverse (-1000..1000)
         y: Lateral Strafe (-1000..1000)
         z: Depth/Throttle (-1000..1000, 0 neutral)
         r: Yaw Heading (-1000..1000)
         buttons: uint16 bitmask
         """
-        if self.state.is_sim:
-            self.mock_sim.set_manual_control(x, y, z, r)
-            with self.state.lock:
-                self.state.servo_raw = list(self.mock_sim.motor_pwms)
-            return
-
         if not self.mav_conn:
             return
 
+        def clamp(value: int) -> int:
+            return max(-1000, min(1000, int(value)))
+
         # In ArduSub MANUAL_CONTROL, z is 0-1000 with 500 being neutral depth
-        scaled_z = max(0, min(1000, int((z + 1000) / 2)))
+        scaled_z = max(0, min(1000, int((clamp(z) + 1000) / 2)))
         try:
-            # 1. Primary MAVLink MANUAL_CONTROL (Message #69)
             self.mav_conn.mav.manual_control_send(
                 self.state.target_system,
-                int(x), int(y), scaled_z, int(r), int(buttons)
-            )
-
-            # 2. Dual RC_CHANNELS_OVERRIDE (Message #70) for ArduSub ROV channel mapping
-            # Ch1=Pitch, Ch2=Roll, Ch3=Throttle(Depth), Ch4=Yaw, Ch5=Forward, Ch6=Lateral
-            rc_pitch = 1500
-            rc_roll = 1500
-            rc_throttle = max(1100, min(1900, int(1500 + (z * 0.4))))
-            rc_yaw = max(1100, min(1900, int(1500 + (r * 0.4))))
-            rc_fwd = max(1100, min(1900, int(1500 + (x * 0.4))))
-            rc_lat = max(1100, min(1900, int(1500 + (y * 0.4))))
-
-            self.mav_conn.mav.rc_channels_override_send(
-                self.state.target_system,
-                self.state.target_component,
-                rc_pitch,
-                rc_roll,
-                rc_throttle,
-                rc_yaw,
-                rc_fwd,
-                rc_lat,
-                0, 0
+                clamp(x), clamp(y), scaled_z, clamp(r), int(buttons) & 0xFFFF
             )
         except Exception:
             pass
+
+    def request_param(self, param_name: str):
+        """Ask the vehicle for a single parameter value."""
+        if not self.mav_conn:
+            return
+        try:
+            self.mav_conn.mav.param_request_read_send(
+                self.state.target_system,
+                self.state.target_component,
+                param_name.encode("ascii")[:16],
+                -1,
+            )
+        except Exception:
+            pass
+
+    def set_message_interval(self, message_id: int, hz: float):
+        """Request a telemetry stream rate with MAV_CMD_SET_MESSAGE_INTERVAL."""
+        if not self.mav_conn:
+            return
+        interval_us = int(1_000_000 / hz) if hz > 0 else -1
+        try:
+            self.mav_conn.mav.command_long_send(
+                self.state.target_system,
+                self.state.target_component,
+                mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+                0,
+                float(message_id),
+                float(interval_us),
+                0.0, 0.0, 0.0, 0.0, 0.0,
+            )
+        except Exception:
+            pass
+
+    def request_streams(self):
+        """Ask for the streams used by the HUD and control view."""
+        for message_id, hz in STREAMS:
+            self.set_message_interval(message_id, hz)
 
     def request_param_list(self):
         """Request entire parameter list from Pixhawk."""
@@ -587,9 +600,9 @@ class MavlinkManager:
                 # 1. Read message with short timeout
                 msg = self.mav_conn.recv_match(blocking=True, timeout=0.05)
 
-                # Send GCS heartbeat periodically (1Hz) to maintain link
+                # Send GCS heartbeat periodically to maintain link
                 now = time.time()
-                if now - last_hb_send >= 1.0:
+                if now - last_hb_send >= self.heartbeat_interval:
                     try:
                         self.mav_conn.mav.heartbeat_send(
                             mavutil.mavlink.MAV_TYPE_GCS,
@@ -606,16 +619,22 @@ class MavlinkManager:
                         with self.state.lock:
                             if self.state.connected:
                                 self.state.connected = False
+                                self.state.claw.reset("link lost")
                                 self.log("[MAVLink] Serial port connection died", "WARN")
                         time.sleep(0.5)
                         continue
 
-                    # Check heartbeat timeout
-                    if now - self.state.last_heartbeat_time > self.state.heartbeat_timeout:
-                        with self.state.lock:
-                            if self.state.connected:
-                                self.state.connected = False
-                                self.log("[MAVLink] Heartbeat lost - vehicle offline", "WARN")
+                # Heartbeat watchdog runs even while other telemetry arrives.
+                if (
+                    self.state.connected
+                    and now - self.state.last_heartbeat_time > self.state.heartbeat_timeout
+                ):
+                    with self.state.lock:
+                        if self.state.connected:
+                            self.state.connected = False
+                            self.state.claw.reset("link lost")
+                            self.log("[MAVLink] Heartbeat lost - vehicle offline", "WARN")
+                if not msg:
                     continue
 
                 self._process_mavlink_msg(msg)
@@ -640,8 +659,15 @@ class MavlinkManager:
                 self._last_rate_time = now
 
         if msg_type == "HEARTBEAT":
+            # Ignore GCS / MAVLink-router heartbeats; only the autopilot counts.
+            if msg.type == mavutil.mavlink.MAV_TYPE_GCS:
+                return
+            if msg.autopilot == mavutil.mavlink.MAV_AUTOPILOT_INVALID:
+                return
             # Autopilot heartbeat
+            link_up = False
             with self.state.lock:
+                link_up = not self.state.connected
                 self.state.connected = True
                 self.state.last_heartbeat_time = now
                 self.state.target_system = msg.get_srcSystem()
@@ -655,6 +681,9 @@ class MavlinkManager:
                 self.state.custom_mode = msg.custom_mode
                 mode_def = FLIGHT_MODES.get(msg.custom_mode)
                 self.state.flight_mode_name = mode_def["name"] if mode_def else f"MODE_{msg.custom_mode}"
+            if link_up:
+                self.log("[MAVLink] Autopilot heartbeat received, link up", "INFO")
+                self.request_streams()
 
         elif msg_type == "ATTITUDE":
             import math
@@ -693,37 +722,27 @@ class MavlinkManager:
 
         elif msg_type == "STATUSTEXT":
             text = msg.text
+            if isinstance(text, bytes):
+                text = text.decode(errors="replace")
+            text = text.rstrip("\x00")
             with self.state.lock:
                 self.state.last_statustext = text
                 if "LEAK" in text.upper():
                     self.state.leak_detected = True
+                parse_statustext(text, self.state.claw)
             self.log(f"[Pixhawk] {text}", "WARN" if "ERROR" in text.upper() or "FAIL" in text.upper() else "INFO")
 
         elif msg_type == "PARAM_VALUE":
             param_id = msg.param_id
+            if isinstance(param_id, bytes):
+                param_id = param_id.decode(errors="replace")
+            param_id = param_id.rstrip("\x00")
             param_value = msg.param_value
             param_type = msg.param_type
+            if param_id == "GRIP_DC_CURR":
+                with self.state.lock:
+                    self.state.claw.current_ma = int(param_value)
             if self.param_callback:
                 self.param_callback(param_id, param_value, param_type)
 
-    def _handle_sim_packet(self, pkt: Dict[str, Any]):
-        """Directly ingest virtual telemetry packet from MockSimEngine."""
-        with self.state.lock:
-            self.state.connected = True
-            self.state.last_heartbeat_time = time.time()
-            self.state.armed = pkt["armed"]
-            self.state.custom_mode = pkt["flight_mode"]
-            mode_def = FLIGHT_MODES.get(pkt["flight_mode"])
-            self.state.flight_mode_name = mode_def["name"] if mode_def else "MANUAL"
-            self.state.roll_deg = pkt["roll"]
-            self.state.pitch_deg = pkt["pitch"]
-            self.state.yaw_deg = pkt["yaw"]
-            self.state.depth_m = pkt["depth"]
-            self.state.pressure_bar = pkt["pressure_bar"]
-            self.state.temperature_c = pkt["temperature"]
-            self.state.battery_voltage = pkt["voltage"]
-            self.state.battery_current = pkt["current"]
-            self.state.battery_pct = pkt["battery_pct"]
-            self.state.leak_detected = pkt["leak"]
-            self.state.servo_raw = list(pkt["motor_pwms"])
-            self.state.packet_rate_hz = 20.0
+
