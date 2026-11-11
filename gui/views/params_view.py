@@ -20,7 +20,7 @@ from gui.theme import (
     FONT_BODY_BOLD,
     FONT_SMALL,
 )
-from gui.widgets.mono_widgets import RetroCard
+from gui.widgets.mono_widgets import RetroCard, grab_when_viewable
 from core.param_manager import ParameterManager, ParameterItem
 from core.mavlink_manager import MavlinkManager
 
@@ -140,11 +140,11 @@ class ParamsView(tk.Frame):
     def _show_edit_dialog(self, param: ParameterItem):
         win = tk.Toplevel(self)
         win.title(f"Edit Parameter: {param.name}")
-        win.geometry("380x180")
+        win.geometry("420x300")
         win.config(bg=COLOR_BG)
         win.resizable(False, False)
         win.transient(self)
-        win.grab_set()
+        grab_when_viewable(win)
 
         card = RetroCard(win, title=f"Set Value: {param.name}")
         card.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -175,6 +175,8 @@ class ParamsView(tk.Frame):
 
         ttk.Button(btn_row, text="[ SAVE ]", style="Invert.TButton", command=_save).pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(btn_row, text="CANCEL", style="Retro.TButton", command=win.destroy).pack(side=tk.LEFT)
+        val_entry.bind("<Return>", lambda event: _save())
+        win.bind("<Escape>", lambda event: win.destroy())
 
     def _request_refresh(self):
         self.mav_mgr.request_param_list()

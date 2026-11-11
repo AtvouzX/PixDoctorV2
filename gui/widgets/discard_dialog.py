@@ -22,7 +22,7 @@ from gui.theme import (
     FONT_BODY_BOLD,
     FONT_SMALL,
 )
-from gui.widgets.mono_widgets import RetroCard
+from gui.widgets.mono_widgets import RetroCard, grab_when_viewable
 
 
 class DiscardDialog(tk.Toplevel):
@@ -48,7 +48,7 @@ class DiscardDialog(tk.Toplevel):
         self.result: str = "cancel"
 
         self.transient(parent.winfo_toplevel() if parent else None)
-        self.grab_set()
+        grab_when_viewable(self)
 
         self._build_ui(title, message, item_name)
         self._center_window(parent)

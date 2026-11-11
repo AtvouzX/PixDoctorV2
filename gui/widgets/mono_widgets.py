@@ -241,3 +241,22 @@ class PwmBar(tk.Frame):
             x1 = max(cx, meas_x)
             self.canvas.create_rectangle(x0, 2, x1, h - 2, fill=COLOR_TEXT_WHITE, outline="")
             self.canvas.create_line(meas_x, 0, meas_x, h, fill=COLOR_INVERT_BG, width=2)
+
+
+def grab_when_viewable(window: tk.Misc, attempts: int = 40) -> None:
+    """Call grab_set() once the window is mapped.
+
+    Tk refuses "grab set" on an unmapped window ("window not viewable"), which
+    happens on X11/Jetson when a Toplevel is grabbed in the same idle cycle it
+    was created in. Retry on the event loop instead of failing the callback.
+    """
+    def _try(remaining: int) -> None:
+        if not window.winfo_exists():
+            return
+        try:
+            window.grab_set()
+        except tk.TclError:
+            if remaining > 0:
+                window.after(25, _try, remaining - 1)
+
+    window.after_idle(_try, attempts)

@@ -25,7 +25,13 @@ from gui.theme import (
     FONT_SMALL,
     configure_retro_styles,
 )
-from gui.widgets.mono_widgets import RetroCard, MetricCard, RetroPill, PwmBar
+from gui.widgets.mono_widgets import (
+    MetricCard,
+    PwmBar,
+    RetroCard,
+    RetroPill,
+    grab_when_viewable,
+)
 from gui.views.summary_view import SummaryView
 from gui.views.thruster_view import ThrusterView
 from gui.views.controller_view import ControllerView
@@ -514,7 +520,7 @@ class PixDoctorApp(tk.Tk):
         win.geometry("520x400")
         win.config(bg=COLOR_BG)
         win.transient(self)
-        win.grab_set()
+        grab_when_viewable(win)
 
         card = RetroCard(win, title="Manual Port Configuration")
         card.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
