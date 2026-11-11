@@ -29,6 +29,9 @@ DEFAULT_CONFIG = """\
 #    on Windows. Serial endpoints ignore the UDP-only settings below.
 # 3) Push to a remote router: udpout:192.168.1.50:14550
 endpoint = "udpin:0.0.0.0:14550"
+# Serial rate used only when endpoint is a serial port (/dev/ttyXXX or COMx).
+# Set 57600 when SERIAL0_BAUD in the firmware is 57.
+baudrate = 115200
 source_system = 255
 source_component = 191
 control_hz = 20
@@ -75,6 +78,9 @@ DEFAULT_CLAW_REQUIRED = {
 @dataclass(frozen=True)
 class LinkConfig:
     endpoint: str = "udpin:0.0.0.0:14550"
+    # Serial rate for /dev/ttyXXX or COMx endpoints. The Pixhawk ran 57600 on
+    # the bench; SERIAL0_BAUD in the firmware is the authoritative value.
+    baudrate: int = 115200
     source_system: int = 255
     source_component: int = 191
     control_hz: float = 20.0
@@ -151,6 +157,7 @@ def load_rov_config(path: Path | None = None) -> RovConfig:
     link_raw = _section(data, "link")
     link = LinkConfig(
         endpoint=normalize_endpoint(str(link_raw.get("endpoint", LinkConfig.endpoint))),
+        baudrate=int(link_raw.get("baudrate", LinkConfig.baudrate)),
         source_system=int(link_raw.get("source_system", 255)),
         source_component=int(link_raw.get("source_component", 191)),
         control_hz=float(link_raw.get("control_hz", 20)),

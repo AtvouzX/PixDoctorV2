@@ -99,6 +99,7 @@ class PixDoctorApp(tk.Tk):
             nano_mgr=self.nano_mgr,
             status_callback=self._log_event
         )
+        self.auto_detector.seed_baudrate(self.rov_cfg.link.baudrate)
 
         # 3. Build UI Components
         self._build_top_status_strip()
@@ -112,6 +113,7 @@ class PixDoctorApp(tk.Tk):
         if self.rov_cfg.link.auto_connect:
             self.mav_mgr.connect(
                 self.rov_cfg.link.endpoint,
+                baudrate=self.rov_cfg.link.baudrate,
                 source_system=self.rov_cfg.link.source_system,
                 source_component=self.rov_cfg.link.source_component,
             )
@@ -557,7 +559,7 @@ class PixDoctorApp(tk.Tk):
         b_row = tk.Frame(card.body, bg=COLOR_SURFACE)
         b_row.pack(fill=tk.X, pady=4)
         tk.Label(b_row, text="PIXHAWK BAUD:", bg=COLOR_SURFACE, fg=COLOR_TEXT_WHITE, font=FONT_SMALL, width=18, anchor="w").pack(side=tk.LEFT)
-        baud_var = tk.IntVar(value=115200)
+        baud_var = tk.IntVar(value=self.rov_cfg.link.baudrate)
         cb_baud = ttk.Combobox(b_row, textvariable=baud_var, values=[115200, 57600, 921600], width=12, state="readonly")
         cb_baud.pack(side=tk.LEFT)
         tk.Label(b_row, text="(115200 USB / 57600 TELEM)", bg=COLOR_SURFACE, fg=COLOR_TEXT_DIM, font=FONT_SMALL).pack(side=tk.LEFT, padx=6)

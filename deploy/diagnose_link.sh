@@ -108,7 +108,7 @@ try:
 except Exception as exc:
     print(f"  [fail] {port}: cannot open: {exc}")
     raise SystemExit(0)
-for baud in (115200, 57600):
+for baud in (115200, 57600, 921600):
     try:
         conn.set_baudrate(baud)
     except Exception:
@@ -116,6 +116,7 @@ for baud in (115200, 57600):
     hb = conn.wait_heartbeat(timeout=4)
     if hb is not None:
         print(f"  [ok]   {port} @ {baud}: heartbeat sys={hb.get_srcSystem()} comp={hb.get_srcComponent()}")
+        print(f"  [info] set this rate: [link] baudrate = {baud}")
         conn.close()
         raise SystemExit(0)
     print(f"  [fail] {port} @ {baud}: no heartbeat in 4 s")
@@ -172,6 +173,7 @@ from pathlib import Path
 link = tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("link", {})
 print(f"  endpoint = {link.get('endpoint')}")
 if str(link.get("endpoint", "")).startswith("/dev/"):
+    print(f"  baudrate = {link.get('baudrate')} (serial)")
     print("  mode: direct USB - Pixhawk must not be plugged into the Pi")
 else:
     print("  mode: router/UDP - Pixhawk must be cabled to the Pi, router running")

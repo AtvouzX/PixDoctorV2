@@ -30,6 +30,8 @@ class AutoDetector:
 
         self._pixhawk_connected_port: Optional[str] = None
         self._nano_connected_port: Optional[str] = None
+        # Tried first, then the other of (57600, 115200).
+        self._pixhawk_baudrate: Optional[int] = None
         self._last_error: str = ""
 
     def start(self):
@@ -49,6 +51,22 @@ class AutoDetector:
     def _notify(self, msg: str, level: str = "INFO"):
         if self.status_callback:
             self.status_callback(msg, level)
+
+    def seed_baudrate(self, baudrate: int) -> None:
+        """Try this serial rate first; the other rate is still attempted."""
+        try:
+            value = int(baudrate)
+        except (TypeError, ValueError):
+            return
+        if value > 0:
+            self._pixhawk_baudrate = value
+
+    def _pixhawk_baudrates(self) -> list[int]:
+        rates = [57600, 115200]
+        if self._pixhawk_baudrate in rates:
+            rates.remove(self._pixhawk_baudrate)
+            rates.insert(0, self._pixhawk_baudrate)
+        return rates
 
     def _probe_ping_check(self, port_str: str) -> bool:
         """Quick 150ms ping to determine if an ambiguous USB port is running PixDoctor probe firmware."""
@@ -158,19 +176,25 @@ class AutoDetector:
                 # Auto-connect Pixhawk if disconnected
                 if not self.mav_mgr.is_connected() and pixhawk_candidate:
                     self._notify(f"[Auto-Detect] Detected Pixhawk candidate on {pixhawk_candidate}. Connecting...", "INFO")
-                    success = self.mav_mgr.connect(pixhawk_candidate, baudrate=115200)
-                    if not success:
-                        # Fallback to TELEM baudrate 57600
-                        success = self.mav_mgr.connect(pixhawk_candidate, baudrate=57600)
+                    success = False
+                    for baudrate in self._pixhawk_baudrates():
+                        success = self.mav_mgr.connect(pixhawk_candidate, baudrate=baudrate)
+                        if success:
+                            self._pixhawk_baudrate = baudrate
+                            self._notify(
+                                f"[Auto-Detect] Pixhawk link at {baudrate} baud", "INFO"
+                            )
+                            break
 
                     if success:
                         self._pixhawk_connected_port = pixhawk_candidate
                         self._notify(f"[Auto-Detect] Pixhawk connected on {pixhawk_candidate}", "INFO")
                     else:
+                        tried = ", ".join(str(b) for b in self._pixhawk_baudrates())
                         self._notify(
-                            f"[Auto-Detect] Port {pixhawk_candidate} opened but no Pixhawk heartbeat."
-                            " Check the cable, the Pixhawk power LED, and serial permissions"
-                            " (group dialout).",
+                            f"[Auto-Detect] Port {pixhawk_candidate} opened but no Pixhawk heartbeat"
+                            f" (tried {tried} baud). Check the cable, the Pixhawk power LED,"
+                            " SERIAL0_BAUD, and serial permissions (group dialout).",
                             "WARN",
                         )
 

@@ -65,9 +65,17 @@ the loader normalizes that back to `/dev/ttyACM0`, so both forms work.
 1. `sudo usermod -aG dialout "$USER"`, then log out and back in.
 2. `sudo systemctl disable --now ModemManager` (Ubuntu/JetPack images only).
 3. Plug the Pixhawk USB into the Jetson, power the ROV. Confirm `ls /dev/ttyACM0`.
-4. `python3 deploy/switch_link.py direct --device /dev/ttyACM0`.
-5. `./deploy/diagnose_link.sh --device /dev/ttyACM0` — step 6 must print a heartbeat.
+4. `python3 deploy/switch_link.py direct --device /dev/ttyACM0 --baudrate 57600`
+   — use the rate that produced a heartbeat in step 5.
+5. `./deploy/diagnose_link.sh --device /dev/ttyACM0` — step 6 tries 115200,
+   57600 and 921600 and prints the rate that answered. Step 8 shows what
+   `config.toml` will actually use.
 6. `python3 main.py`. Top strip shows `PIXHAWK: /dev/ttyACM0`.
+
+The Pixhawk USB CDC port ignores the host baud in most builds, so 57600 and
+115200 normally both work. If only 57600 answers, that is the value to keep in
+`[link] baudrate`; the auto-detector also falls back to the other of the two
+rates, trying the configured one first.
 
 If step 3 shows no device, the problem is hardware: cable (data, not
 charge-only), Pixhawk power, or USB hub. If step 6 fails while step 3 passes,

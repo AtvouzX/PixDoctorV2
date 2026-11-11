@@ -1,10 +1,11 @@
 """Switch config.toml [link] between router and direct-USB wiring.
 
-Only the endpoint (and auto_connect) lines are rewritten; comments and every
-other setting in the file stay byte-for-byte intact.
+Only the endpoint, baudrate and auto_connect lines are rewritten; comments and
+every other setting in the file stay byte-for-byte intact.
 
     python3 deploy/switch_link.py router
     python3 deploy/switch_link.py direct --device /dev/ttyACM0
+    python3 deploy/switch_link.py direct --device /dev/ttyACM0 --baudrate 57600
     python3 deploy/switch_link.py direct --device COM5
     python3 deploy/switch_link.py show
 """
@@ -60,8 +61,8 @@ def _write(path: Path, lines: list[str]) -> None:
         handle.write(text)
 
 
-def switch(path: Path, endpoint: str) -> str:
-    """Write *endpoint* into the config and return the resolved path as text."""
+def switch(path: Path, endpoint: str, baudrate: int | None = None) -> str:
+    """Write *endpoint* (and optional serial *baudrate*) into the config."""
     if not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(DEFAULT_CONFIG, encoding="utf-8")
@@ -75,19 +76,25 @@ def switch(path: Path, endpoint: str) -> str:
     lines = _set(lines, "endpoint", f'"{endpoint}"', start, end)
     start, end = _sections(lines)
     lines = _set(lines, "auto_connect", "true", start, end)
+    if baudrate:
+        start, end = _sections(lines)
+        lines = _set(lines, "baudrate", str(int(baudrate)), start, end)
     _write(path, [line.replace("\n", newline) for line in lines])
     return endpoint
 
 
 def read_endpoint(path: Path) -> str | None:
+    return _read_link(path).get("endpoint")
+
+
+def _read_link(path: Path) -> dict:
     if not path.exists():
-        return None
+        return {}
     try:
         import tomllib
     except ModuleNotFoundError:
         import tomli as tomllib
-    link = tomllib.loads(path.read_text(encoding="utf-8")).get("link", {})
-    return link.get("endpoint")
+    return tomllib.loads(path.read_text(encoding="utf-8")).get("link", {})
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -95,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("mode", choices=("router", "direct", "show"))
     parser.add_argument("--device", default="/dev/ttyACM0",
                         help="serial port or COM port for direct mode")
+    parser.add_argument("--baudrate", type=int, default=None,
+                        help="serial rate for direct mode (57600 or 115200);"
+                             " omit to keep the current value")
     parser.add_argument("--config", default=None, help="config.toml path")
     args = parser.parse_args(argv)
 
@@ -108,6 +118,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.mode == "show":
         print(read_endpoint(path) or "config.toml not created yet")
+        if path.exists():
+            link = _read_link(path)
+            print(f"baudrate = {link.get('baudrate')} (serial only)")
         return 0
 
     endpoint = ROUTER_ENDPOINT if args.mode == "router" else args.device
@@ -116,8 +129,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: --device must be /dev/ttyXXX or COMn, got {endpoint!r}",
                   file=sys.stderr)
             return 2
-    switch(path, endpoint)
+        if args.baudrate is not None and args.baudrate <= 0:
+            print("error: --baudrate must be positive", file=sys.stderr)
+            return 2
+    baudrate = args.baudrate if args.mode == "direct" else None
+    switch(path, endpoint, baudrate)
     print(f"{path}: endpoint = {endpoint}")
+    if baudrate:
+        print(f"{path}: baudrate = {baudrate}")
     if args.mode == "direct":
         print("Pixhawk must be plugged into this host only;"
               " stop mavlink-router on the Pi.")

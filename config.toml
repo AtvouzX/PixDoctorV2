@@ -9,6 +9,9 @@
 #    on Windows. Serial endpoints ignore the UDP-only settings below.
 # 3) Push to a remote router: udpout:192.168.1.50:14550
 endpoint = "udpin:0.0.0.0:14550"
+# Serial rate used only when endpoint is a serial port (/dev/ttyXXX or COMx).
+# Set 57600 when SERIAL0_BAUD in the firmware is 57.
+baudrate = 115200
 source_system = 255
 source_component = 191
 control_hz = 20

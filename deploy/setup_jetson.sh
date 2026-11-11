@@ -4,11 +4,13 @@
 #
 #   ./deploy/setup_jetson.sh --router            # pixhawk -> Raspberry Pi -> UDP 14550
 #   ./deploy/setup_jetson.sh --direct            # pixhawk -> Jetson USB (/dev/ttyACM0)
+#   ./deploy/setup_jetson.sh --direct --baudrate 57600
 #   ./deploy/setup_jetson.sh --autostart         # add the desktop autostart unit
 #   ./deploy/setup_jetson.sh --router --autostart
 #
 # Installs Python dependencies, adds the user to input + dialout, and sets the
 # [link] section of config.toml through deploy/switch_link.py.
+# Without --baudrate the existing [link] baudrate is kept.
 
 set -euo pipefail
 
@@ -16,9 +18,10 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 MODE=""
 AUTOSTART=0
 DEVICE=""
+BAUDRATE=""
 
 usage() {
-    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [ $# -gt 0 ]; do
@@ -26,6 +29,7 @@ while [ $# -gt 0 ]; do
         --router) MODE="router"; shift ;;
         --direct) MODE="direct"; shift ;;
         --device) DEVICE="${2:?--device needs a path}"; shift 2 ;;
+        --baudrate) BAUDRATE="${2:?--baudrate needs a number}"; shift 2 ;;
         --autostart) AUTOSTART=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
@@ -83,8 +87,13 @@ if [ -n "$MODE" ]; then
         DEVICE="${DEVICE:-/dev/ttyACM0}"
         echo "    No --device given, using $DEVICE"
     fi
+    BAUD_ARGS=""
+    if [ -n "$BAUDRATE" ]; then
+        BAUD_ARGS="--baudrate $BAUDRATE"
+    fi
     if [ "$MODE" = "direct" ]; then
-        "$PYTHON_BIN" "$REPO_DIR/deploy/switch_link.py" direct --device "$DEVICE"
+        # shellcheck disable=SC2086
+        "$PYTHON_BIN" "$REPO_DIR/deploy/switch_link.py" direct --device "$DEVICE" $BAUD_ARGS
     else
         "$PYTHON_BIN" "$REPO_DIR/deploy/switch_link.py" router
     fi
@@ -118,6 +127,7 @@ path = Path(sys.argv[1])
 if path.exists():
     link = tomllib.loads(path.read_text(encoding="utf-8")).get("link", {})
     print(f"    endpoint = {link.get('endpoint')}")
+    print(f"    baudrate = {link.get('baudrate')} (serial only)")
     print(f"    auto_connect = {link.get('auto_connect')}")
 else:
     print("    config.toml not created yet; it is written on first launch.")

@@ -265,14 +265,16 @@ class TestSwitchLink(unittest.TestCase):
                              "auto_connect = true\ncontrol_hz = 20\n\n[control]\n"
                              "enabled = false\n")
 
-            switch_link.switch(Path(path), "/dev/ttyACM0")
+            switch_link.switch(Path(path), "/dev/ttyACM0", baudrate=57600)
             self.assertEqual(switch_link.read_endpoint(Path(path)), "/dev/ttyACM0")
             with open(path, encoding="utf-8") as handle:
                 text = handle.read()
             self.assertIn("# header comment", text)
             self.assertIn("# keep me", text)
             self.assertNotIn("udpin", text)
-            self.assertEqual(load_rov_config(Path(path)).link.endpoint, "/dev/ttyACM0")
+            cfg = load_rov_config(Path(path))
+            self.assertEqual(cfg.link.endpoint, "/dev/ttyACM0")
+            self.assertEqual(cfg.link.baudrate, 57600)
 
             switch_link.switch(Path(path), switch_link.ROUTER_ENDPOINT)
             self.assertEqual(
