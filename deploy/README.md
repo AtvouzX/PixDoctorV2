@@ -208,6 +208,29 @@ the Pixhawk unplugged from it.
 
 ## Link check without the GUI
 
+`deploy/diagnose_link.sh` runs the whole chain and prints `[ok]` / `[fail]` per
+step: device node, port ownership, `dialout`, ModemManager/brltty, a 4 s
+serial heartbeat, a 4 s UDP 14550 heartbeat, and the active `config.toml`
+endpoint.
+
+```bash
+./deploy/diagnose_link.sh
+./deploy/diagnose_link.sh --device /dev/ttyACM1
+./deploy/diagnose_link.sh --router 192.168.1.50 --device /dev/ttyACM0
+```
+
+Known causes on Jetson:
+
+- Pixhawk still cabled to the Pi while `endpoint` is `/dev/ttyACM0` (or the
+  reverse). The Pixhawk USB has one owner.
+- User not in `dialout`, or logged in before the group was added.
+- `ModemManager` (Ubuntu/JetPack images) opening `/dev/ttyACM0` and re-sending
+  AT commands. Disable it: `sudo systemctl disable --now ModemManager`.
+- `brltty` claiming CH340/FTDI adapters: `sudo systemctl disable --now brltty`.
+- Low battery or a charge-only USB cable: the Pixhawk LEDs stay off and no
+  `/dev/ttyACM0` appears.
+- Two GCS on UDP 14550 (a second GUI or QGC with its own listener).
+
 From the Jetson, confirm the router path before starting the GUI:
 
 ```bash

@@ -30,6 +30,7 @@ class AutoDetector:
 
         self._pixhawk_connected_port: Optional[str] = None
         self._nano_connected_port: Optional[str] = None
+        self._last_error: str = ""
 
     def start(self):
         """Start auto-detection worker loop."""
@@ -165,6 +166,13 @@ class AutoDetector:
                     if success:
                         self._pixhawk_connected_port = pixhawk_candidate
                         self._notify(f"[Auto-Detect] Pixhawk connected on {pixhawk_candidate}", "INFO")
+                    else:
+                        self._notify(
+                            f"[Auto-Detect] Port {pixhawk_candidate} opened but no Pixhawk heartbeat."
+                            " Check the cable, the Pixhawk power LED, and serial permissions"
+                            " (group dialout).",
+                            "WARN",
+                        )
 
                 # Auto-connect Probe (ESP32 or Nano) if disconnected
                 if not self.nano_mgr.state.connected and probe_candidate:
@@ -174,7 +182,10 @@ class AutoDetector:
                         self._nano_connected_port = probe_candidate
                         self._notify(f"[Auto-Detect] Hardware probe connected on {probe_candidate}", "INFO")
 
-            except Exception:
-                pass
+            except Exception as exc:
+                message = str(exc)
+                if message != self._last_error:
+                    self._last_error = message
+                    self._notify(f"[Auto-Detect] Scan failed: {message}", "WARN")
 
             time.sleep(2.0)
