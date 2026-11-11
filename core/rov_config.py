@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 try:
     import tomllib
@@ -114,7 +115,7 @@ class RovConfig:
     link: LinkConfig = field(default_factory=LinkConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
     claw: ClawConfig = field(default_factory=ClawConfig)
-    path: Path = field(default=Path("config.toml"), repr=False)
+    path: Optional[Path] = field(default=Path("config.toml"), repr=False)
 
 
 def default_config_path() -> Path:

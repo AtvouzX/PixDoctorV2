@@ -6,7 +6,7 @@ establishes links to Pixhawk 2.4.8 and Arduino Nano 33 IoT (PixDoctorNano).
 
 import time
 import threading
-from typing import Optional, Callable
+from typing import List, Optional, Callable
 import serial.tools.list_ports
 
 from core.mavlink_manager import MavlinkManager
@@ -61,7 +61,7 @@ class AutoDetector:
         if value > 0:
             self._pixhawk_baudrate = value
 
-    def _pixhawk_baudrates(self) -> list[int]:
+    def _pixhawk_baudrates(self) -> List[int]:
         rates = [57600, 115200]
         if self._pixhawk_baudrate in rates:
             rates.remove(self._pixhawk_baudrate)

@@ -298,5 +298,20 @@ class TestSwitchLink(unittest.TestCase):
         self.assertEqual(normalize_endpoint("COM5"), "COM5")
 
 
+class TestPy38Syntax(unittest.TestCase):
+    """The Jetson runs Python 3.8; newer-only syntax must not reach core/gui."""
+
+    def test_runtime_modules_parse_with_38_grammar(self):
+        import ast
+
+        for folder in ("core", "gui"):
+            for path in Path(PROJECT_ROOT, folder).rglob("*.py"):
+                source = path.read_text(encoding="utf-8")
+                try:
+                    ast.parse(source, feature_version=(3, 8))
+                except SyntaxError as exc:
+                    self.fail(f"{path}: {exc}")
+
+
 if __name__ == "__main__":
     unittest.main()
