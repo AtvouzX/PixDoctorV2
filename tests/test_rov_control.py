@@ -208,6 +208,83 @@ class TestSdlMapping(unittest.TestCase):
         self.assertEqual(snapshot["trigger_rt"], 0)
 
 
+class TestUserPadLayout(unittest.TestCase):
+    """8-axis pad: A0 LX, A1 LY, A2 LT, A3 RX, A4 RY, A5 RT, A6/A7 d-pad."""
+
+    class Pad:
+        """User's pad with both sticks pushed up/right, Y pressed, dpad right."""
+
+        _axes = [0.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 0.0]
+        # 0=A 1=B 2=Y 3=X 4=LB 5=RB
+        _buttons = [0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+
+        def get_name(self):
+            return "Xbox Controller"
+
+        def get_numaxes(self):
+            return len(self._axes)
+
+        def get_axis(self, index):
+            return self._axes[index]
+
+        def get_numbuttons(self):
+            return len(self._buttons)
+
+        def get_button(self, index):
+            return self._buttons[index]
+
+        def get_numhats(self):
+            return 0
+
+    def _snapshot(self, layout="auto"):
+        from core.gamepad_manager import GamepadManager
+
+        manager = GamepadManager()
+        manager.axis_layout = layout
+        manager._parse_sdl(self.Pad())
+        return manager.state.get_snapshot()
+
+    def test_sticks_and_triggers(self):
+        snap = self._snapshot()
+        self.assertGreater(snap["axis_ly"], 900)   # A1
+        self.assertGreater(snap["axis_rx"], 900)   # A3
+        self.assertGreater(snap["axis_ry"], 900)   # A4
+        self.assertEqual(snap["axis_lx"], 0)
+        self.assertEqual(snap["trigger_lt"], 0)    # A2 idle -1
+        self.assertEqual(snap["trigger_rt"], 0)    # A5 idle -1
+
+    def test_face_buttons_follow_raw_2y_3x(self):
+        snap = self._snapshot()
+        self.assertTrue(snap["btn_y"])
+        self.assertFalse(snap["btn_x"])
+
+    def test_dpad_on_axes(self):
+        snap = self._snapshot()
+        self.assertTrue(snap["dpad_right"])
+        self.assertFalse(snap["dpad_up"])
+
+    def test_menu_and_stick_click_buttons(self):
+        class Pad(self.Pad):
+            _buttons = [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 1, 1]
+
+        from core.gamepad_manager import GamepadManager
+
+        manager = GamepadManager()
+        manager._parse_sdl(Pad())
+        snap = manager.state.get_snapshot()
+        self.assertTrue(snap["btn_back"])    # raw 8
+        self.assertTrue(snap["btn_start"])   # raw 9
+        self.assertTrue(snap["btn_l3"])      # raw 11
+        self.assertTrue(snap["btn_r3"])      # raw 12
+        self.assertFalse(snap["btn_a"])
+        self.assertFalse(snap["btn_lb"])
+
+    def test_forced_sdl_layout_overrides_autodetect(self):
+        snap = self._snapshot("sdl")
+        # A2 is the left trigger in the SDL layout, so RX reads the trigger.
+        self.assertLess(snap["axis_rx"], 0)
+
+
 class TestClawStatus(unittest.TestCase):
     def test_parses_firmware_messages(self):
         status = ClawStatus()

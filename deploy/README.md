@@ -233,14 +233,25 @@ shows the device's ground truth:
 Map it in 30 seconds: move **one** stick axis at a time and read which `A#`
 changes, then press each button and read its number.
 
-- Throttle is A1, yaw A0, fwd A3, lateral A2, triggers A4/A5 in the standard
-  SDL GameController order. If your driver reports the right stick on A4/A5 and
-  the triggers elsewhere, tick **RAW PAIR (A0 A1 / A2 A3 / T4 T5)** to force
-  that layout instead.
-- Buttons 0-3 are A B X Y, 6/7 BACK/START, 8/9 stick clicks. Some drivers put
-  the d-pad on buttons 11-14, which is already handled.
-- Wrong face button letters means a Nintendo-style layout; switch DEVICE MAP
-  to `PLAYSTATION` or remap with `[ ASSIGN ]`.
+Two axis layouts are built in; the Controller view's **AXIS LAYOUT** box picks
+one (`auto` is the default):
+
+| Layout | Axes | Face buttons | D-pad |
+| :--- | :--- | :--- | :--- |
+| `sdl` | A0 LX, A1 LY, A2 RX, A3 RY, A4 LT, A5 RT | 0 A, 1 B, 2 X, 3 Y | hat |
+| `dpad_axes` | A0 LX, A1 LY, A2 LT, A3 RX, A4 RY, A5 RT, A6/A7 d-pad | 0 A, 1 B, 2 Y, 3 X | A6/A7 |
+
+`auto` selects `dpad_axes` when the pad reports 8 or more axes, otherwise
+`sdl`. Both layouts use 4/5 for LB/RB. `sdl` keeps BACK/START on 6/7 and the
+stick clicks on 8/9. `dpad_axes` uses BACK 8, START 9, L3 11, R3 12 and falls
+back to buttons 11-14 for a hat-style d-pad.
+
+If it still mismatches, the requires-wiring pad report is
+`RAW AXES` / `RAW BTN` in the Controller view. One line like
+`LY A1 LX A0 RY A4 RX A3 LT A2 RT A5 DPADX A6 DPADY A7, A0 B1 Y2 X3, LB4 RB5`
+is enough to add an exact layout. The current pad's full report:
+`LY A1, LX A0, RY A4, RX A3, DPADX A6, DPADY A7, LT A2, RT A5,
+A0 B1 Y2 X3 LB4 RB5 BACK8 START9 L3 11 R3 12`.
 
 Report the `RAW AXES`/`RAW BTN` text if it still mismatches.
 

@@ -266,6 +266,8 @@ class GamepadManager:
         self.device_index = device_index
         self._sdl_joystick = None
         self._sdl_name = ""
+        # "auto" | "sdl" | "dpad_axes". auto picks dpad_axes for 8+ axis pads.
+        self.axis_layout = "auto"
 
         # Load XInput DLL
         self._xinput = None
@@ -677,6 +679,13 @@ class GamepadManager:
             return False
 
     # ------------------------------------------------------- SDL backend
+    def _resolve_axis_layout(self, axis_count: int) -> str:
+        """Pick the raw axis layout. 8+ axis pads put the d-pad on A6/A7."""
+        chosen = (self.axis_layout or "auto").lower()
+        if chosen in ("sdl", "dpad_axes"):
+            return chosen
+        return "dpad_axes" if axis_count >= 8 else "sdl"
+
     def _close_sdl_joystick(self):
         if self._sdl_joystick is not None:
             try:
@@ -767,22 +776,30 @@ class GamepadManager:
         def axis(index: int) -> float:
             return axes[index] if len(axes) > index else 0.0
 
-        # SDL GameController layout (Linux/Xbox): 0 LX, 1 LY, 2 RX, 3 RY,
-        # 4 LT, 5 RT, 6 LT (some pads), 8/9 = RY/LY for the Windows driver.
-        # Triggers idle at -1, so a 4/5 index is only a trigger when the pad
-        # reports more than 6 axes. Otherwise the triggers live on 8/9.
-        raw_lx = int(axis(0) * 32767)
-        # SDL reports stick up as -1; invert so UP is positive like XInput.
-        raw_ly = int(-axis(1) * 32767)
-        raw_rx = int(axis(2) * 32767)
-        ry_index = 9 if len(axes) > 9 else 3
-        raw_ry = int(-axis(ry_index) * 32767)
-        if len(axes) > 5:
-            lt = int(max(0.0, min(1.0, (axis(4) + 1.0) / 2.0)) * 1000)
-            rt = int(max(0.0, min(1.0, (axis(5) + 1.0) / 2.0)) * 1000)
+        def trigger(index: int) -> int:
+            value = axis(index)
+            if value <= -0.9:
+                return 0
+            return int(max(0.0, min(1.0, (value + 1.0) / 2.0)) * 1000)
+
+        layout = self._resolve_axis_layout(len(axes))
+        if layout == "dpad_axes":
+            # 8-axis clone pads (d-pad on A6/A7):
+            # A0 LX, A1 LY, A2 LT, A3 RX, A4 RY, A5 RT, A6 DPADX, A7 DPADY.
+            raw_lx = int(axis(0) * 32767)
+            raw_ly = int(-axis(1) * 32767)
+            raw_rx = int(axis(3) * 32767)
+            raw_ry = int(-axis(4) * 32767)
+            lt = trigger(2)
+            rt = trigger(5)
         else:
-            # No trigger axes reported: report both triggers released.
-            lt = rt = 0
+            # SDL GameController order: A0 LX, A1 LY, A2 RX, A3 RY, A4 LT, A5 RT.
+            raw_lx = int(axis(0) * 32767)
+            raw_ly = int(-axis(1) * 32767)
+            raw_rx = int(axis(2) * 32767)
+            raw_ry = int(-axis(3) * 32767)
+            lt = trigger(4) if len(axes) > 5 else 0
+            rt = trigger(5) if len(axes) > 5 else 0
 
         with self.state.lock:
             dz = self.state.deadzone_pct
@@ -841,24 +858,45 @@ class GamepadManager:
                 "btn_r3": button(11),
             }
         else:
-            # SDL GameController order: A B X Y LB RB BACK START L3 R3.
-            # Some Linux drivers report DPAD_UP/DOWN/LEFT/RIGHT as buttons 11-14,
-            # so only treat the hat as authoritative when the pad has a hat.
-            btn_states = {
-                "btn_a": button(0),
-                "btn_b": button(1),
-                "btn_x": button(2),
-                "btn_y": button(3),
-                "btn_lb": button(4),
-                "btn_rb": button(5),
-                "btn_back": button(6),
-                "btn_start": button(7),
-                "btn_l3": button(8),
-                "btn_r3": button(9),
-            }
+            # A0 A1 A4 A5 hold across both layouts; Y/X swap on 8-axis pads
+            # (raw 0=A, 1=B, 2=Y, 3=X there).
+            if layout == "dpad_axes":
+                # 8-axis pads: BACK 8, START 9, stick clicks 11/12.
+                btn_states = {
+                    "btn_a": button(0),
+                    "btn_b": button(1),
+                    "btn_y": button(2),
+                    "btn_x": button(3),
+                    "btn_lb": button(4),
+                    "btn_rb": button(5),
+                    "btn_back": button(8),
+                    "btn_start": button(9),
+                    "btn_l3": button(11),
+                    "btn_r3": button(12),
+                }
+            else:
+                btn_states = {
+                    "btn_a": button(0),
+                    "btn_b": button(1),
+                    "btn_x": button(2),
+                    "btn_y": button(3),
+                    "btn_lb": button(4),
+                    "btn_rb": button(5),
+                    "btn_back": button(6),
+                    "btn_start": button(7),
+                    "btn_l3": button(8),
+                    "btn_r3": button(9),
+                }
 
         dp_up = dp_down = dp_left = dp_right = False
-        if joystick.get_numhats() > 0:
+        if layout == "dpad_axes" and len(axes) > 7:
+            # Axis d-pad: up/left report negative, down/right positive.
+            dp_x, dp_y = axis(6), axis(7)
+            dp_up = dp_y < -0.5
+            dp_down = dp_y > 0.5
+            dp_left = dp_x < -0.5
+            dp_right = dp_x > 0.5
+        elif joystick.get_numhats() > 0:
             hat_x, hat_y = joystick.get_hat(0)
             dp_up = hat_y > 0
             dp_down = hat_y < 0

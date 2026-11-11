@@ -404,20 +404,25 @@ class ControllerView(tk.Frame):
         )
         self.lbl_profile_desc.pack(side=tk.LEFT)
 
-        # Raw pair mode: swap the 4 stick axes / triggers without a code change.
-        self.raw_pair_var = tk.BooleanVar(value=bool(getattr(self.gamepad_mgr, "raw_axes", False)))
-        tk.Checkbutton(
+        # Axis layout: AUTO = d-pad on A6/A7 when the pad reports 8+ axes.
+        tk.Label(
             prof_row,
-            text="RAW PAIR (A0 A1 / A2 A3 / T4 T5)",
-            variable=self.raw_pair_var,
-            command=self._on_raw_pair_toggled,
+            text="AXIS LAYOUT:",
             bg=COLOR_SURFACE,
-            fg=COLOR_TEXT_WHITE,
-            selectcolor=COLOR_BG,
-            activebackground=COLOR_SURFACE,
-            activeforeground=COLOR_TEXT_WHITE,
+            fg=COLOR_TEXT_DIM,
             font=FONT_SMALL
-        ).pack(side=tk.LEFT, padx=(12, 0))
+        ).pack(side=tk.LEFT, padx=(12, 4))
+
+        self.layout_var = tk.StringVar(value=getattr(self.gamepad_mgr, "axis_layout", "auto"))
+        cb_layout = ttk.Combobox(
+            prof_row,
+            textvariable=self.layout_var,
+            values=("auto", "dpad_axes", "sdl"),
+            state="readonly",
+            width=11
+        )
+        cb_layout.pack(side=tk.LEFT)
+        cb_layout.bind("<<ComboboxSelected>>", self._on_layout_changed)
 
         # Live Button Monitor / Tester Readout
         self.lbl_btn_monitor = tk.Label(
@@ -532,11 +537,9 @@ class ControllerView(tk.Frame):
             command=self._save_config
         ).pack(side=tk.RIGHT)
 
-    def _on_raw_pair_toggled(self):
-        """Switch the SDL backend between SDL GameController and raw pair layout."""
-        enabled = bool(self.raw_pair_var.get())
-        if hasattr(self.gamepad_mgr, "raw_axes"):
-            self.gamepad_mgr.raw_axes = enabled
+    def _on_layout_changed(self, event=None):
+        """Apply the chosen axis layout immediately and re-read the pad."""
+        self.gamepad_mgr.axis_layout = self.layout_var.get()
         self._raw_axes_now(force=True)
 
     def _raw_axes_now(self, force: bool = False):
