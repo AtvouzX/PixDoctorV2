@@ -16,14 +16,47 @@ packet the GUI sends (its GCS heartbeat) and forwards vehicle telemetry back.
 
 ## Two supported wirings
 
-| Wiring | Pixhawk USB goes to | `[link] endpoint` |
-| :--- | :--- | :--- |
-| With router | Raspberry Pi 4B running `mavlink-router` | `udpin:0.0.0.0:14550` |
-| Direct | Jetson (no Pi in the path) | `/dev/ttyACM0` (Linux) or `COMx` (Windows) |
+| Wiring | Pixhawk USB goes to | `[link] endpoint` | Setup script |
+| :--- | :--- | :--- | :--- |
+| With router | Raspberry Pi 4B running `mavlink-router` | `udpin:0.0.0.0:14550` | `deploy/setup_pi.sh` + `deploy/setup_jetson.sh --router` |
+| Direct | Jetson (no Pi in the path) | `/dev/ttyACM0` (Linux) or `COMx` (Windows) | `deploy/setup_jetson.sh --direct` |
 
 Only one GCS may own the serial port. Do not plug the Pixhawk into the Jetson
 while `mavlink-router` is running on the Pi: two owners of the autopilot's
 serial link cause command loss and failsafe trips. Pick one wiring per dive.
+
+## Setup scripts
+
+Both are idempotent; re-run them after changing cables or ports.
+
+```bash
+# Raspberry Pi 4B
+sudo ./deploy/setup_pi.sh                     # /dev/ttyACM0, 115200
+sudo ./deploy/setup_pi.sh --device /dev/ttyACM1
+
+# Jetson
+./deploy/setup_jetson.sh --router             # uses the Pi
+./deploy/setup_jetson.sh --direct             # Pixhawk on Jetson USB
+./deploy/setup_jetson.sh --direct --device /dev/ttyACM0
+./deploy/setup_jetson.sh --router --autostart # also install the systemd unit
+```
+
+`setup_pi.sh` installs `mavlink-router`, writes
+`/etc/mavlink-router/main.conf` with the chosen device, adds the user to
+`dialout`, and enables the service. `setup_jetson.sh` installs
+`requirements.txt`, adds the user to `input` and `dialout`, sets the link, and
+optionally installs `pixdoctor.service` with the real user, path and Python.
+
+Switch wiring later without reinstalling:
+
+```bash
+python3 deploy/switch_link.py show
+python3 deploy/switch_link.py router
+python3 deploy/switch_link.py direct --device /dev/ttyACM0   # or COM5 on Windows
+```
+
+`switch_link.py` rewrites only `endpoint` and `auto_connect` inside `[link]`;
+comments, `[control]`, `[claw]` and line endings stay untouched.
 
 ## Raspberry Pi 4B (MAVLink router)
 

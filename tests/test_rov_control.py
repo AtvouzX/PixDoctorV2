@@ -9,6 +9,7 @@ import os
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
@@ -245,6 +246,40 @@ class TestControlLoop(unittest.TestCase):
         self.assertEqual(mav.sent[-1], (0, 0, 0, 0, 0b10))
         control._step(now + 1.0)
         self.assertEqual(len(mav.sent), 1)
+
+
+class TestSwitchLink(unittest.TestCase):
+    def _script(self):
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, "deploy"))
+        import switch_link
+
+        return switch_link
+
+    def test_direct_and_back_keep_comments(self):
+        switch_link = self._script()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "config.toml")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("# header comment\n\n[link]\n# keep me\n"
+                             'endpoint = "udpin:0.0.0.0:14550"\n'
+                             "auto_connect = true\ncontrol_hz = 20\n\n[control]\n"
+                             "enabled = false\n")
+
+            switch_link.switch(Path(path), "/dev/ttyACM0")
+            self.assertEqual(switch_link.read_endpoint(Path(path)), "/dev/ttyACM0")
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
+            self.assertIn("# header comment", text)
+            self.assertIn("# keep me", text)
+            self.assertNotIn("udpin", text)
+            self.assertEqual(load_rov_config(Path(path)).link.endpoint, "/dev/ttyACM0")
+
+            switch_link.switch(Path(path), switch_link.ROUTER_ENDPOINT)
+            self.assertEqual(
+                switch_link.read_endpoint(Path(path)), "udpin:0.0.0.0:14550"
+            )
+            self.assertIn("[control]", text)
+            self.assertEqual(text.count("[link]"), 1)
 
 
 if __name__ == "__main__":
