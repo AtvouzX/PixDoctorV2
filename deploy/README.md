@@ -56,7 +56,25 @@ python3 deploy/switch_link.py direct --device /dev/ttyACM0   # or COM5 on Window
 ```
 
 `switch_link.py` rewrites only `endpoint` and `auto_connect` inside `[link]`;
-comments, `[control]`, `[claw]` and line endings stay untouched.
+comments, `[control]`, `[claw]` and line endings stay untouched. Under Git
+Bash, MSYS may pass `/dev/ttyACM0` as `C:/Program Files/Git/dev/ttyACM0`;
+the loader normalizes that back to `/dev/ttyACM0`, so both forms work.
+
+## Direct wiring, step by step
+
+1. `sudo usermod -aG dialout "$USER"`, then log out and back in.
+2. `sudo systemctl disable --now ModemManager` (Ubuntu/JetPack images only).
+3. Plug the Pixhawk USB into the Jetson, power the ROV. Confirm `ls /dev/ttyACM0`.
+4. `python3 deploy/switch_link.py direct --device /dev/ttyACM0`.
+5. `./deploy/diagnose_link.sh --device /dev/ttyACM0` — step 6 must print a heartbeat.
+6. `python3 main.py`. Top strip shows `PIXHAWK: /dev/ttyACM0`.
+
+If step 3 shows no device, the problem is hardware: cable (data, not
+charge-only), Pixhawk power, or USB hub. If step 6 fails while step 3 passes,
+the user lacks `dialout` or another service owns the port.
+
+Do not start `mavlink-router` on the Jetson; for direct wiring the GUI owns
+the port.
 
 ## Raspberry Pi 4B (MAVLink router)
 

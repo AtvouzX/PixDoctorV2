@@ -278,8 +278,22 @@ class TestSwitchLink(unittest.TestCase):
             self.assertEqual(
                 switch_link.read_endpoint(Path(path)), "udpin:0.0.0.0:14550"
             )
+            with open(path, encoding="utf-8") as handle:
+                text = handle.read()
             self.assertIn("[control]", text)
             self.assertEqual(text.count("[link]"), 1)
+
+    def test_normalize_endpoint_repairs_git_bash_paths(self):
+        from core.rov_config import normalize_endpoint
+
+        self.assertEqual(
+            normalize_endpoint("C:/Program Files/Git/dev/ttyACM0"), "/dev/ttyACM0"
+        )
+        self.assertEqual(normalize_endpoint(r"\\dev\\ttyACM0"), "/dev/ttyACM0")
+        self.assertEqual(
+            normalize_endpoint("udpin:0.0.0.0:14550"), "udpin:0.0.0.0:14550"
+        )
+        self.assertEqual(normalize_endpoint("COM5"), "COM5")
 
 
 if __name__ == "__main__":

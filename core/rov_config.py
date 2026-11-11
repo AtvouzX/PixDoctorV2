@@ -121,6 +121,23 @@ def _section(data: dict, key: str) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def normalize_endpoint(endpoint: str) -> str:
+    """Repair endpoints mangled by Git Bash path conversion or stray escapes.
+
+    'C:/Program Files/Git/dev/ttyACM0' and '\\\\dev\\\\ttyACM0' both become
+    '/dev/ttyACM0'. Anything else is returned unchanged.
+    """
+    value = endpoint.strip().strip("'\"")
+    value = value.replace("\\", "/")
+    if value.startswith(("/dev/", "/tmp/", "/etc/")):
+        return value.replace("//", "/")
+    for prefix in ("/dev/", "/tmp/", "/etc/"):
+        index = value.find(prefix)
+        if index > 0:
+            return value[index:].replace("//", "/")
+    return value
+
+
 def load_rov_config(path: Path | None = None) -> RovConfig:
     """Load config.toml, writing a commented default when it is missing."""
     path = Path(path) if path else default_config_path()
@@ -133,7 +150,7 @@ def load_rov_config(path: Path | None = None) -> RovConfig:
 
     link_raw = _section(data, "link")
     link = LinkConfig(
-        endpoint=str(link_raw.get("endpoint", LinkConfig.endpoint)),
+        endpoint=normalize_endpoint(str(link_raw.get("endpoint", LinkConfig.endpoint))),
         source_system=int(link_raw.get("source_system", 255)),
         source_component=int(link_raw.get("source_component", 191)),
         control_hz=float(link_raw.get("control_hz", 20)),

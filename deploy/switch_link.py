@@ -98,6 +98,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", default=None, help="config.toml path")
     args = parser.parse_args(argv)
 
+    if args.mode == "direct":
+        # Git Bash (MSYS) rewrites /dev/... into a Windows path; undo it.
+        args.device = re.sub(r"^[A-Za-z]:[/\\]+(?=(dev|tmp|etc)[/\\])(.*)",
+                             lambda m: "/" + m.group(2).replace("\\", "/"),
+                             args.device)
+
     path = Path(args.config) if args.config else default_config_path()
 
     if args.mode == "show":
