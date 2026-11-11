@@ -127,6 +127,10 @@ class GamepadState:
         self.wireless_profile: str = "XBOX_BT"
         self.last_pressed_raw_btn: int = 0
         self.last_update_time: float = 0.0
+        # Raw device view (SDL backend) for diagnosing mismatched layouts.
+        self.raw_axes: List[float] = []
+        self.raw_buttons: Dict[int, bool] = {}
+        self.raw_hat: tuple = (0, 0)
 
         # Raw Axes before calibration (-32768..32767)
         self.raw_lx: int = 0
@@ -191,6 +195,9 @@ class GamepadState:
                 "controller_name": self.controller_name,
                 "backend": self.backend,
                 "last_update_time": self.last_update_time,
+                "raw_axes": list(self.raw_axes),
+                "raw_buttons": dict(self.raw_buttons),
+                "raw_hat": tuple(self.raw_hat),
                 "raw_lx": self.raw_lx,
                 "raw_ly": self.raw_ly,
                 "raw_rx": self.raw_rx,
@@ -801,6 +808,13 @@ class GamepadManager:
 
         def button(index: int) -> bool:
             return index < len(pressed) and pressed[index]
+
+        # Raw indices feed the Controller view's "raw pair" readout, which is
+        # the only practical way to see how a driver numbers the axes.
+        with self.state.lock:
+            self.state.raw_axes = [round(a, 2) for a in axes]
+            self.state.raw_buttons = {i: True for i, down in enumerate(pressed) if down}
+            self.state.raw_hat = joystick.get_hat(0) if joystick.get_numhats() > 0 else (0, 0)
 
         lowered = name.lower()
         ps_hint = any(

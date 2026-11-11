@@ -221,6 +221,29 @@ the active one loads at launch.
 Launching from the desktop icon (not a terminal) still finds the pad, because
 the SDL backend runs on its own polling thread.
 
+### When the pad layout does not match
+
+SDL does not guarantee index order across drivers, so the Controller view now
+shows the device's ground truth:
+
+- `RAW AXES: A0:... A1:...` — live value of every axis index.
+- `RAW BTN: 3,7` — every button index currently held.
+- `HAT: (x, y)` — the d-pad hat.
+
+Map it in 30 seconds: move **one** stick axis at a time and read which `A#`
+changes, then press each button and read its number.
+
+- Throttle is A1, yaw A0, fwd A3, lateral A2, triggers A4/A5 in the standard
+  SDL GameController order. If your driver reports the right stick on A4/A5 and
+  the triggers elsewhere, tick **RAW PAIR (A0 A1 / A2 A3 / T4 T5)** to force
+  that layout instead.
+- Buttons 0-3 are A B X Y, 6/7 BACK/START, 8/9 stick clicks. Some drivers put
+  the d-pad on buttons 11-14, which is already handled.
+- Wrong face button letters means a Nintendo-style layout; switch DEVICE MAP
+  to `PLAYSTATION` or remap with `[ ASSIGN ]`.
+
+Report the `RAW AXES`/`RAW BTN` text if it still mismatches.
+
 ### Flight test order
 
 1. Verify calibration in the Controller view with motors dry and `FLY` off.

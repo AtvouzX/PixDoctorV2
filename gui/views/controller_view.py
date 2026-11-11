@@ -404,6 +404,21 @@ class ControllerView(tk.Frame):
         )
         self.lbl_profile_desc.pack(side=tk.LEFT)
 
+        # Raw pair mode: swap the 4 stick axes / triggers without a code change.
+        self.raw_pair_var = tk.BooleanVar(value=bool(getattr(self.gamepad_mgr, "raw_axes", False)))
+        tk.Checkbutton(
+            prof_row,
+            text="RAW PAIR (A0 A1 / A2 A3 / T4 T5)",
+            variable=self.raw_pair_var,
+            command=self._on_raw_pair_toggled,
+            bg=COLOR_SURFACE,
+            fg=COLOR_TEXT_WHITE,
+            selectcolor=COLOR_BG,
+            activebackground=COLOR_SURFACE,
+            activeforeground=COLOR_TEXT_WHITE,
+            font=FONT_SMALL
+        ).pack(side=tk.LEFT, padx=(12, 0))
+
         # Live Button Monitor / Tester Readout
         self.lbl_btn_monitor = tk.Label(
             parent,
@@ -413,7 +428,18 @@ class ControllerView(tk.Frame):
             font=FONT_MONO,
             anchor="w"
         )
-        self.lbl_btn_monitor.pack(fill=tk.X, pady=(0, 6))
+        self.lbl_btn_monitor.pack(fill=tk.X, pady=(0, 2))
+
+        self.lbl_raw_input = tk.Label(
+            parent,
+            text="RAW AXES: -\nRAW BTN: -  HAT: (0, 0)",
+            bg=COLOR_SURFACE,
+            fg=COLOR_TEXT_DIM,
+            font=FONT_MONO,
+            anchor="w",
+            justify=tk.LEFT
+        )
+        self.lbl_raw_input.pack(fill=tk.X, pady=(0, 6))
 
         # Top Remap Row: Button Selector + Action Dropdown + Apply
         assign_box = tk.Frame(parent, bg=COLOR_SURFACE)
@@ -505,6 +531,23 @@ class ControllerView(tk.Frame):
             style="Retro.TButton",
             command=self._save_config
         ).pack(side=tk.RIGHT)
+
+    def _on_raw_pair_toggled(self):
+        """Switch the SDL backend between SDL GameController and raw pair layout."""
+        enabled = bool(self.raw_pair_var.get())
+        if hasattr(self.gamepad_mgr, "raw_axes"):
+            self.gamepad_mgr.raw_axes = enabled
+        self._raw_axes_now(force=True)
+
+    def _raw_axes_now(self, force: bool = False):
+        """Re-read the pad immediately so the swap is visible without moving sticks."""
+        joystick = getattr(self.gamepad_mgr, "_sdl_joystick", None)
+        if joystick is None:
+            return
+        try:
+            self.gamepad_mgr._parse_sdl(joystick)
+        except Exception:
+            pass
 
     def _on_wireless_profile_changed(self, event=None):
         prof = self.profile_var.get()
@@ -763,6 +806,18 @@ class ControllerView(tk.Frame):
         self.lbl_tare_status.config(
             text=f"CENTER OFFSETS: LX:{off_lx:+5d} | LY:{off_ly:+5d} | RX:{off_rx:+5d} | RY:{off_ry:+5d}"
         )
+
+        # Raw device readout: the ground truth when labels do not match.
+        axes = state_dict.get("raw_axes") or []
+        btns = state_dict.get("raw_buttons") or {}
+        hat = state_dict.get("raw_hat") or (0, 0)
+        if axes or btns:
+            ax_txt = " ".join(f"A{i}:{v:+.2f}" for i, v in enumerate(axes[:10]))
+            btn_txt = ",".join(str(i) for i in sorted(btns)) or "-"
+            self.lbl_raw_input.config(
+                text=f"RAW AXES: {ax_txt}\nRAW BTN: {btn_txt}  HAT: {hat}",
+                fg=COLOR_TEXT_WHITE
+            )
 
         # Update live button monitor
         last_pressed = state_dict.get("last_pressed_button")
