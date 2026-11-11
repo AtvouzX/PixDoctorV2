@@ -33,6 +33,7 @@ from core.gamepad_manager import (
 )
 from core.mavlink_manager import MavlinkManager
 from core.motor_matrix_manager import MotorMatrixManager
+from core.rov_control import RovControl
 from gui.widgets.motor_matrix_dialog import MotorMatrixDialog
 
 
@@ -62,11 +63,13 @@ class ControllerView(tk.Frame):
         parent,
         gamepad_mgr: GamepadManager,
         mav_mgr: MavlinkManager,
+        rov_ctrl: Optional[RovControl] = None,
         **kwargs
     ):
         super().__init__(parent, bg=COLOR_BG, **kwargs)
         self.gamepad_mgr = gamepad_mgr
         self.mav_mgr = mav_mgr
+        self.rov_ctrl = rov_ctrl
         self.streaming_enabled = tk.BooleanVar(value=True)
         self.matrix_mgr = MotorMatrixManager.get_instance()
 
@@ -774,6 +777,14 @@ class ControllerView(tk.Frame):
             )
 
         if self.streaming_enabled.get() and state_dict.get("connected", False) and self.mav_mgr.is_connected():
+            if not self.rov_ctrl.enabled:
+                # FLY is the single switch for MANUAL_CONTROL. A stray mask here
+                # would also fire claw button bits.
+                self.lbl_btn_monitor.config(
+                    text="TRANSMIT BLOCKED: enable FLY in the top strip",
+                    fg=COLOR_TEXT_DIM
+                )
+                return
             cmds = self.matrix_mgr.extract_gamepad_commands(state_dict)
             buttons = state_dict.get("buttons_bitmask", 0)
 

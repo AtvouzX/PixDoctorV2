@@ -173,6 +173,40 @@ class TestSdlMapping(unittest.TestCase):
         self.assertTrue(snapshot["btn_a"])
         self.assertTrue(snapshot["dpad_up"])
 
+    def test_six_axis_pad_keeps_right_stick(self):
+        """A pad without trigger axes must not read RY from a trigger index."""
+        from core.gamepad_manager import GamepadManager
+
+        class Axis:
+            _buttons = [0] * 10
+
+            def get_name(self):
+                return "Xbox Controller"
+
+            def get_numaxes(self):
+                return 4
+
+            def get_axis(self, index):
+                # right stick pushed right and up
+                return {0: 0.0, 1: 0.0, 2: 1.0, 3: -1.0}[index]
+
+            def get_numbuttons(self):
+                return 10
+
+            def get_button(self, index):
+                return 0
+
+            def get_numhats(self):
+                return 0
+
+        manager = GamepadManager()
+        manager._parse_sdl(Axis())
+        snapshot = manager.state.get_snapshot()
+        self.assertGreater(snapshot["axis_rx"], 900)
+        self.assertGreater(snapshot["axis_ry"], 900)
+        self.assertEqual(snapshot["trigger_lt"], 0)
+        self.assertEqual(snapshot["trigger_rt"], 0)
+
 
 class TestClawStatus(unittest.TestCase):
     def test_parses_firmware_messages(self):
@@ -311,6 +345,40 @@ class TestPy38Syntax(unittest.TestCase):
                     ast.parse(source, feature_version=(3, 8))
                 except SyntaxError as exc:
                     self.fail(f"{path}: {exc}")
+
+
+class TestUnidirectionalForwardPair(unittest.TestCase):
+    """Modified SimpleROV-4 firmware: MAIN 1-2 are one-way ESCs at FWD_IDLE."""
+
+    def _matrix(self):
+        from core.motor_matrix_manager import MotorMatrixManager
+
+        matrix = MotorMatrixManager()
+        matrix.set_frame_id(5, notify=False)
+        matrix.motor_directions.update({1: 1, 2: 1, 3: 1, 4: 1})
+        return matrix
+
+    def test_idle_is_fwd_idle_not_1500(self):
+        from core.rov_config import PwmConfig
+
+        cfg = PwmConfig()
+        self.assertEqual(self._matrix().compute_motor_pwms(0, 0, 0, 0, pwm_cfg=cfg)[:4],
+                         [1000, 1000, 1500, 1500])
+
+    def test_forward_scales_to_fwd_max_and_reverse_clamps(self):
+        from core.rov_config import PwmConfig
+
+        cfg = PwmConfig()
+        matrix = self._matrix()
+        self.assertEqual(matrix.compute_motor_pwms(1000, 0, 0, 0, pwm_cfg=cfg)[:2], [2000, 2000])
+        self.assertEqual(matrix.compute_motor_pwms(-1000, 0, 0, 0, pwm_cfg=cfg)[:2], [1000, 1000])
+
+    def test_disarmed_uses_idle_for_forward_pair(self):
+        from core.rov_config import PwmConfig
+
+        cfg = PwmConfig(fwd_motor_1_idle=1050, fwd_motor_2_idle=1050)
+        pwms = self._matrix().compute_motor_pwms(0, 0, 0, 0, armed=False, pwm_cfg=cfg)
+        self.assertEqual(pwms[:4], [1050, 1050, 1500, 1500])
 
 
 if __name__ == "__main__":

@@ -47,6 +47,15 @@ auto_connect = true
 # Initial FLY toggle state. Keep false so editing parameters never spins props.
 enabled = false
 
+[pwm]
+# Unidirectional forward pair of the modified SimpleROV-4 firmware: MAIN 1-2
+# (BLDC drone ESCs) sit at MOT_FWD_IDLE instead of 1500 and rise to MOT_FWD_MAX.
+# Reverse commands are clamped to the idle value by the firmware. Vertical
+# pair (MAIN 3-4) keeps the standard 1500 neutral.
+fwd_motor_1_idle = 1000
+fwd_motor_2_idle = 1000
+fwd_motor_max = 2000
+
 [claw]
 # Torpedosub BTS7960 claw. Button bits in MANUAL_CONTROL map to BTN0..2:
 # close_bit -> BTN0_FUNCTION=140, open_bit -> 139, stop_bit -> 141.
@@ -98,6 +107,25 @@ class ControlConfig:
 
 
 @dataclass(frozen=True)
+class PwmConfig:
+    """Modified SimpleROV-4 firmware: MAIN 1-2 are one-way drone ESCs."""
+
+    fwd_motor_1_idle: int = 1000
+    fwd_motor_2_idle: int = 1000
+    fwd_motor_max: int = 2000
+
+    def forward_idle(self, motor: int) -> int:
+        if motor == 1:
+            return self.fwd_motor_1_idle
+        if motor == 2:
+            return self.fwd_motor_2_idle
+        return 1500
+
+    def is_unidirectional(self, motor: int) -> bool:
+        return motor in (1, 2)
+
+
+@dataclass(frozen=True)
 class ClawConfig:
     enabled: bool = True
     close_bit: int = 0
@@ -114,6 +142,7 @@ class ClawConfig:
 class RovConfig:
     link: LinkConfig = field(default_factory=LinkConfig)
     control: ControlConfig = field(default_factory=ControlConfig)
+    pwm: PwmConfig = field(default_factory=PwmConfig)
     claw: ClawConfig = field(default_factory=ClawConfig)
     path: Optional[Path] = field(default=Path("config.toml"), repr=False)
 
@@ -172,6 +201,13 @@ def load_rov_config(path: Path | None = None) -> RovConfig:
     control_raw = _section(data, "control")
     control = ControlConfig(enabled=bool(control_raw.get("enabled", False)))
 
+    pwm_raw = _section(data, "pwm")
+    pwm = PwmConfig(
+        fwd_motor_1_idle=int(pwm_raw.get("fwd_motor_1_idle", 1000)),
+        fwd_motor_2_idle=int(pwm_raw.get("fwd_motor_2_idle", 1000)),
+        fwd_motor_max=int(pwm_raw.get("fwd_motor_max", 2000)),
+    )
+
     claw_raw = _section(data, "claw")
     required_raw = _section(claw_raw, "required")
     required = {str(k): int(v) for k, v in required_raw.items()}
@@ -185,4 +221,4 @@ def load_rov_config(path: Path | None = None) -> RovConfig:
         required=required or dict(DEFAULT_CLAW_REQUIRED),
     )
 
-    return RovConfig(link=link, control=control, claw=claw, path=path)
+    return RovConfig(link=link, control=control, pwm=pwm, claw=claw, path=path)

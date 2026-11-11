@@ -276,14 +276,21 @@ class MotorMatrixManager:
         lat: int,
         depth: int,
         yaw: int,
-        armed: bool = True
+        armed: bool = True,
+        pwm_cfg=None
     ) -> List[int]:
         """
         Compute frame-accurate PWMs using current allocation matrix and direction multipliers.
         Guarantees exact parity with physical probe measurements.
+
+        pwm_cfg (core.rov_config.PwmConfig) marks the one-way forward pair: those
+        motors sit at their idle value and reverse thrust is clamped to it.
         """
         if not armed:
-            return [1500] * 8
+            if pwm_cfg is None:
+                return [1500] * 8
+            return [pwm_cfg.forward_idle(m) if pwm_cfg.is_unidirectional(m) else 1500
+                    for m in range(1, 9)]
 
         f = max(-1.0, min(1.0, fwd / 1000.0))
         l = max(-1.0, min(1.0, lat / 1000.0))
@@ -306,7 +313,14 @@ class MotorMatrixManager:
                 )
                 dir_mul = self.motor_directions.get(i, 1)
                 effective_factor = max(-1.0, min(1.0, raw_factor * dir_mul))
-                pwms[i - 1] = 1500 + int(effective_factor * 400.0)
+                if pwm_cfg is not None and pwm_cfg.is_unidirectional(i):
+                    idle = pwm_cfg.forward_idle(i)
+                    effective_factor = max(0.0, effective_factor)
+                    pwms[i - 1] = idle + int(
+                        effective_factor * max(0, pwm_cfg.fwd_motor_max - idle)
+                    )
+                else:
+                    pwms[i - 1] = 1500 + int(effective_factor * 400.0)
 
         return pwms
 

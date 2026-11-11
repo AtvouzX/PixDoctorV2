@@ -36,6 +36,7 @@ from core.nano_probe_manager import NanoProbeManager
 from core.param_manager import ParameterManager
 from core.gamepad_manager import GamepadManager
 from core.motor_matrix_manager import MotorMatrixManager
+from core.rov_config import PwmConfig
 from gui.widgets.motor_matrix_dialog import MotorMatrixDialog
 
 
@@ -49,6 +50,7 @@ class ThrusterView(tk.Frame):
         nano_mgr: NanoProbeManager,
         param_mgr: ParameterManager,
         gamepad_mgr: Optional[GamepadManager] = None,
+        pwm_cfg: Optional[PwmConfig] = None,
         **kwargs
     ):
         super().__init__(parent, bg=COLOR_BG, **kwargs)
@@ -56,6 +58,8 @@ class ThrusterView(tk.Frame):
         self.nano_mgr = nano_mgr
         self.param_mgr = param_mgr
         self.gamepad_mgr = gamepad_mgr
+        # MAIN 1-2 are one-way ESCs in the modified SimpleROV-4 firmware.
+        self.pwm_cfg = pwm_cfg or PwmConfig()
 
         self.matrix_mgr = MotorMatrixManager.get_instance()
         self.current_frame_id = self.matrix_mgr.get_current_frame_id()
@@ -207,6 +211,7 @@ class ThrusterView(tk.Frame):
             height=250
         )
         self.diagram.pack(fill=tk.BOTH, expand=True)
+        self.diagram.set_neutral([self.pwm_cfg.forward_idle(m) for m in range(1, 9)])
 
         # 2. Motor Spin Direction Matrix Card
         dir_card = RetroCard(left_col, title="Spin Direction (MOT_x_DIRECTION)")
@@ -405,7 +410,15 @@ class ThrusterView(tk.Frame):
         param_name = f"MOT_{motor_idx}_DIRECTION"
         is_rev = (self.param_mgr.get_value(param_name, 1.0) == -1.0)
         sign = -1.0 if is_rev else 1.0
-        pwm_val = max(1000, min(2000, int(1500 + (sign * pct * 4.0))))
+        if self.pwm_cfg.is_unidirectional(motor_idx):
+            # One-way ESC: only forward thrust exists, idle is the floor.
+            idle = self.pwm_cfg.forward_idle(motor_idx)
+            span = max(0, self.pwm_cfg.fwd_motor_max - idle)
+            pwm_val = max(idle, min(self.pwm_cfg.fwd_motor_max, int(idle + span * pct / 100.0)))
+            neutral_pwm = idle
+        else:
+            pwm_val = max(1000, min(2000, int(1500 + (sign * pct * 4.0))))
+            neutral_pwm = 1500
 
         idx = motor_idx - 1
         if 0 <= idx < len(self.slider_widgets):
@@ -418,12 +431,12 @@ class ThrusterView(tk.Frame):
 
         def _clear():
             time.sleep(dur)
-            # Smoothly transition to neutral
-            self.mav_mgr.start_motor_stream(motor_idx, 1500)
-            self.nano_mgr.set_commanded_pwm(motor_idx, 1500)
+            # Smoothly transition to neutral (idle for the one-way pair)
+            self.mav_mgr.start_motor_stream(motor_idx, neutral_pwm)
+            self.nano_mgr.set_commanded_pwm(motor_idx, neutral_pwm)
             if 0 <= idx < len(self.slider_widgets):
-                self.slider_widgets[idx].set(1500)
-                self.slider_labels[idx].config(text="1500µs")
+                self.slider_widgets[idx].set(neutral_pwm)
+                self.slider_labels[idx].config(text=f"{neutral_pwm}µs")
             time.sleep(0.3)
             self.mav_mgr.stop_motor_stream()
             self.diagram.set_active_test(None)
@@ -473,10 +486,12 @@ class ThrusterView(tk.Frame):
                 anchor="w"
             ).pack(side=tk.LEFT)
 
+            idle_pwm = self.pwm_cfg.forward_idle(i)
+
             # Readout label
             lbl_val = tk.Label(
                 row,
-                text="1500µs",
+                text=f"{idle_pwm}µs",
                 bg=COLOR_SURFACE,
                 fg=COLOR_TEXT_WHITE,
                 font=FONT_SMALL,
@@ -492,15 +507,18 @@ class ThrusterView(tk.Frame):
                 from_=1000,
                 to=2000,
                 orient=tk.HORIZONTAL,
-                value=1500,
+                value=idle_pwm,
                 command=lambda val, idx=i: self._on_slider_moved(idx, val)
             )
             scale.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=6)
             self.slider_widgets.append(scale)
 
-            # Quick Preset Buttons
-            for p_val in (1100, 1500, 1900):
-                p_text = "N" if p_val == 1500 else str(p_val)
+            # Quick Preset Buttons (idle/neutral differs for the one-way pair)
+            for p_val in (1100, idle_pwm, max(idle_pwm, 1900)):
+                if p_val == idle_pwm:
+                    p_text = "IDLE" if self.pwm_cfg.is_unidirectional(i) else "N"
+                else:
+                    p_text = str(p_val)
                 ttk.Button(
                     row,
                     text=p_text,
@@ -592,14 +610,15 @@ class ThrusterView(tk.Frame):
             self._all_neutral()
 
     def _all_neutral(self):
-        """Set all motor sliders to 1500µs neutral without disarming."""
+        """Set every motor to its neutral/idle PWM without disarming."""
         self.mav_mgr.stop_motor_stream()
         for i in range(1, len(self.slider_widgets) + 1):
+            idle_pwm = self.pwm_cfg.forward_idle(i)
             idx = i - 1
             if idx < len(self.slider_widgets):
-                self.slider_widgets[idx].set(1500)
-                self.slider_labels[idx].config(text="1500µs")
-            self.nano_mgr.set_commanded_pwm(i, 1500)
+                self.slider_widgets[idx].set(idle_pwm)
+                self.slider_labels[idx].config(text=f"{idle_pwm}µs")
+            self.nano_mgr.set_commanded_pwm(i, idle_pwm)
 
     def _all_zero(self):
         """Kill all motors to 900µs."""
@@ -607,14 +626,15 @@ class ThrusterView(tk.Frame):
             self._set_single_motor_pwm(i, 900)
 
     def _release_all(self):
-        """Release MAVLink servo overrides and return to neutral."""
+        """Release MAVLink servo overrides and return to neutral/idle."""
         self.mav_mgr.release_servo_overrides()
         for i in range(1, len(self.slider_widgets) + 1):
+            idle_pwm = self.pwm_cfg.forward_idle(i)
             idx = i - 1
             if idx < len(self.slider_widgets):
-                self.slider_widgets[idx].set(1500)
-                self.slider_labels[idx].config(text="1500µs")
-            self.nano_mgr.set_commanded_pwm(i, 1500)
+                self.slider_widgets[idx].set(idle_pwm)
+                self.slider_labels[idx].config(text=f"{idle_pwm}µs")
+            self.nano_mgr.set_commanded_pwm(i, idle_pwm)
 
     def update_telemetry(self, mav_snap: Dict[str, Any], nano_snap: Dict[str, Any]):
         """Update closed-loop readings and handle Gamepad thruster drive mode."""
@@ -666,7 +686,9 @@ class ThrusterView(tk.Frame):
                     )
                 else:
                     # Offline / bench simulation: compute PWMs directly from matrix!
-                    servos = self.matrix_mgr.compute_motor_pwms(fwd, lat, throttle, yaw, armed=True)
+                    servos = self.matrix_mgr.compute_motor_pwms(
+                        fwd, lat, throttle, yaw, armed=True, pwm_cfg=self.pwm_cfg
+                    )
 
                 # Update the individual slider widgets to match live PWM outputs from the flight mixer
                 self._updating_sliders = True

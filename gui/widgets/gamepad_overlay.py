@@ -132,9 +132,11 @@ class GamepadOverlay(tk.Frame):
         tx_depth = int(self.ly * gain)
         tx_yaw = int(self.lx * gain)
         tx_b = state_dict.get("buttons_bitmask", 0)
+        pad_note = "" if self.connected else " | GAMEPAD DISCONNECTED"
         self.telemetry_bar.config(
-            text=f"MAVLINK MANUAL_CONTROL (20Hz): FWD(X): {tx_fwd:+4d} | LAT(Y): {tx_lat:+4d} | "
-                 f"DEPTH(Z): {tx_depth:+4d} | YAW(R): {tx_yaw:+4d} | BTN: 0x{tx_b:04X}"
+            text=f"PILOT STICKS x{int(gain * 100)}%{pad_note}: FWD: {tx_fwd:+4d} | "
+                 f"LAT: {tx_lat:+4d} | DEPTH: {tx_depth:+4d} | YAW: {tx_yaw:+4d} | "
+                 f"PAD BTN: 0x{tx_b:04X}"
         )
 
         self.redraw()

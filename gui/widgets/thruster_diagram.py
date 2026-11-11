@@ -49,6 +49,8 @@ class ThrusterDiagram(tk.Canvas):
         self.active_test_thruster: Optional[int] = None
         self.motor_pwms: List[int] = [1500] * 8
         self.motor_reversed: List[bool] = [False] * 8
+        # Neutral/idle per motor: MAIN 1-2 idle at MOT_FWD_IDLE (one-way ESCs).
+        self.motor_neutral: List[int] = [1500] * 8
 
         self.bind("<Configure>", lambda e: self.redraw())
         self.bind("<Button-1>", self._handle_click)
@@ -59,6 +61,10 @@ class ThrusterDiagram(tk.Canvas):
 
     def set_active_test(self, thruster_idx: Optional[int]):
         self.active_test_thruster = thruster_idx
+        self.redraw()
+
+    def set_neutral(self, neutrals: List[int]):
+        self.motor_neutral = list(neutrals[:8])
         self.redraw()
 
     def update_pwms(self, pwms: List[int], reversed_flags: List[bool] = None):
@@ -122,6 +128,7 @@ class ThrusterDiagram(tk.Canvas):
             is_testing = (self.active_test_thruster == t_num)
             is_rev = self.motor_reversed[t_num - 1] if t_num <= len(self.motor_reversed) else False
             current_pwm = self.motor_pwms[t_num - 1] if t_num <= len(self.motor_pwms) else 1500
+            neutral_pwm = self.motor_neutral[t_num - 1] if t_num <= len(self.motor_neutral) else 1500
 
             # Thruster Box size
             box_r = 18
@@ -134,7 +141,7 @@ class ThrusterDiagram(tk.Canvas):
             else:
                 box_bg = COLOR_SURFACE
                 box_fg = COLOR_TEXT_WHITE
-                box_border = COLOR_TEXT_WHITE if abs(current_pwm - 1500) > 30 else COLOR_BORDER_LIGHT
+                box_border = COLOR_TEXT_WHITE if abs(current_pwm - neutral_pwm) > 30 else COLOR_BORDER_LIGHT
 
             # Thruster Outer Enclosure
             self.create_rectangle(
@@ -166,7 +173,7 @@ class ThrusterDiagram(tk.Canvas):
             )
 
             # Draw PWM label below thruster
-            if abs(current_pwm - 1500) > 10:
+            if abs(current_pwm - neutral_pwm) > 10:
                 self.create_text(
                     tx, ty + box_r + 10,
                     text=f"{current_pwm}µs",

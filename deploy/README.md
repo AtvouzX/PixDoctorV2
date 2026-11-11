@@ -189,6 +189,48 @@ sudo usermod -aG input "$USER"
 Log out and back in after changing groups. The SDL backend also needs
 `SDL_VIDEODRIVER=dummy`, which the GUI sets itself.
 
+### First-time gamepad setup
+
+1. Plug the Xbox pad in, log in again after the `input` group change, then
+   `python3 main.py`.
+2. Top strip must show `GAMEPAD: SDL (Linux/Gamepad)`. `GAMEPAD: STANDBY` means
+   no device was found: check `ls /dev/input/js*`, the USB cable and the
+   group membership.
+3. Open the **Controller** view. The stick graphic must follow both sticks
+   live. Left Y = depth, left X = yaw, right Y = forward, right X = lateral.
+4. **WIRELESS PROFILE**: `XBOX_BT` for Xbox over USB/Bluetooth, `PLAYSTATION`
+   for DualShock/DualSense, `GENERIC_DINPUT` for 8BitDo/Logitech clones.
+5. **Zero-tare**: release both sticks, press `[ ZERO-TARE STICK CENTERS ]`.
+   The offsets next to it stop stick drift. `RESET ZERO` clears them.
+6. **Deadzone**: 10% is a good start; raise toward 15% for worn sticks, keep
+   under 20% or fine control suffers.
+7. **Expo**: 0% is linear. 20-30% softens the middle of the stick for depth
+   work, which suits the SimpleROV-4 vertical pair.
+8. **THRUST GAIN**: start at 50%, use 100% only for open water.
+9. **Button map**: pick a button in the `BUTTON` list (or click it on the
+   graphic), choose an `ACTION`, press `[ ASSIGN ]`. Defaults:
+   START arm/disarm, BACK cycle mode, A emergency disarm, B claw grab,
+   L3 claw open, R3 claw stop, Y/X camera tilt, RB lights cycle, LB lights off,
+   D-pad gain and modes.
+10. `[ SAVE TO FILE ]` writes `gamepad_config.json`. `DEFAULT ARDUSUB` restores
+    the factory map, `CAMERA OPERATOR` loads the tilt/lights preset.
+
+Profiles in the bar above the graphic hold separate calibration and mappings;
+the active one loads at launch.
+
+Launching from the desktop icon (not a terminal) still finds the pad, because
+the SDL backend runs on its own polling thread.
+
+### Flight test order
+
+1. Verify calibration in the Controller view with motors dry and `FLY` off.
+2. Enable `FLY` in the top strip, watch the depth/yaw readouts move slowly.
+3. Only then arm. Gamepad loss neutralizes axes at once and disarms after 1 s.
+
+The Controller view's `TRANSMIT MANUAL_CONTROL (20Hz)` checkbox only gates the
+live transmit; nothing is sent unless `FLY` is ON, so claw buttons cannot fire
+by accident while you calibrate.
+
 ## Direct Jetson to Pixhawk (no router)
 
 USB cable from the Pixhawk straight to the Jetson. Nothing else may hold the
@@ -265,6 +307,53 @@ python3 -c "from pymavlink import mavutil; m=mavutil.mavlink_connection('udpin:0
 
 A printed heartbeat means Pi, serial link and UDP path all work. For the
 direct wiring, use `mavutil.mavlink_connection('/dev/ttyACM0', baud=115200)`.
+
+## Fresh start
+
+`deploy/fresh_start.sh` resets generated state without touching code.
+
+```bash
+./deploy/fresh_start.sh --dry-run   # show what would go
+./deploy/fresh_start.sh             # config.toml only
+./deploy/fresh_start.sh --calib     # + gamepad calibration, matrix layout
+./deploy/fresh_start.sh --all       # + logs, __pycache__
+```
+
+Re-runs the test suite and prints git status so code drift is visible. After a
+reset, set the wiring again (`setup_jetson.sh --direct --baudrate 57600` or
+`--router`) and launch with `python3 main.py`.
+
+It never touches vehicle parameters. For firmware-side resets use
+`deploy/simplerov4.parm`, QGroundControl, or the Params view.
+
+Starting over on the Pi too:
+
+```bash
+sudo systemctl disable --now mavlink-router
+sudo rm -f /etc/mavlink-router/main.conf /etc/systemd/system/mavlink-router.service
+sudo ./deploy/setup_pi.sh
+```
+
+## Modified firmware: one-way forward pair
+
+The firmware this GUI ships for drives MAIN 1-2 (SimpleROV-4 forward pair) with
+one-way drone BLDC ESCs. Those outputs do not sit at 1500 us:
+
+| Parameter | Default | Meaning |
+| :--- | :--- | :--- |
+| `MOT_FWD_IDLE` | 1000 | stopped/idle PWM for MAIN 1-2; reverse is clamped here |
+| `MOT_FWD_MAX` | 2000 | full forward PWM for MAIN 1-2 |
+| `MOT_1_DIRECTION` / `MOT_2_DIRECTION` | 1 | keep 1; never reverse these two |
+| MAIN 3-4 (vertical) | 1500 | unchanged standard neutral |
+
+`config.toml` mirrors this in `[pwm]` (`fwd_motor_1_idle`,
+`fwd_motor_2_idle`, `fwd_motor_max`) so the Thruster view predicts the right
+PWMs, shows `IDLE` presets, highlights motors against their own neutral, and
+the `TEST M1/M2` pulse ramps `MOT_FWD_IDLE -> MOT_FWD_MAX` with no reverse.
+
+If a forward motor spins the wrong way, fix it in hardware: swap two motor
+wires, flip the prop, or set the ESC direction. Setting `MOT_1_DIRECTION=-1`
+would disable that motor because the firmware clamps reverse to idle.
 
 ## First-connect checklist
 

@@ -244,12 +244,14 @@ class PixDoctorApp(tk.Tk):
                 mav_mgr=self.mav_mgr,
                 nano_mgr=self.nano_mgr,
                 param_mgr=self.param_mgr,
-                gamepad_mgr=self.gamepad_mgr
+                gamepad_mgr=self.gamepad_mgr,
+                pwm_cfg=self.rov_cfg.pwm
             ),
             "controller": ControllerView(
                 self.workspace,
                 gamepad_mgr=self.gamepad_mgr,
-                mav_mgr=self.mav_mgr
+                mav_mgr=self.mav_mgr,
+                rov_ctrl=self.rov_ctrl
             ),
             "calibration": CalibrationView(self.workspace, mav_mgr=self.mav_mgr),
             "safety": SafetyView(

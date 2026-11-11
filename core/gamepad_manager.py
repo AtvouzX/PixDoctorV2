@@ -757,13 +757,25 @@ class GamepadManager:
         axes = [
             float(joystick.get_axis(i)) for i in range(joystick.get_numaxes())
         ]
-        raw_lx = int((axes[0] if len(axes) > 0 else 0.0) * 32767)
+        def axis(index: int) -> float:
+            return axes[index] if len(axes) > index else 0.0
+
+        # SDL GameController layout (Linux/Xbox): 0 LX, 1 LY, 2 RX, 3 RY,
+        # 4 LT, 5 RT, 6 LT (some pads), 8/9 = RY/LY for the Windows driver.
+        # Triggers idle at -1, so a 4/5 index is only a trigger when the pad
+        # reports more than 6 axes. Otherwise the triggers live on 8/9.
+        raw_lx = int(axis(0) * 32767)
         # SDL reports stick up as -1; invert so UP is positive like XInput.
-        raw_ly = int(-(axes[1] if len(axes) > 1 else 0.0) * 32767)
-        raw_rx = int((axes[2] if len(axes) > 2 else 0.0) * 32767)
-        raw_ry = int(-(axes[3] if len(axes) > 3 else 0.0) * 32767)
-        lt = int(max(0.0, min(1.0, ((axes[4] if len(axes) > 4 else -1.0) + 1.0) / 2.0)) * 1000)
-        rt = int(max(0.0, min(1.0, ((axes[5] if len(axes) > 5 else -1.0) + 1.0) / 2.0)) * 1000)
+        raw_ly = int(-axis(1) * 32767)
+        raw_rx = int(axis(2) * 32767)
+        ry_index = 9 if len(axes) > 9 else 3
+        raw_ry = int(-axis(ry_index) * 32767)
+        if len(axes) > 5:
+            lt = int(max(0.0, min(1.0, (axis(4) + 1.0) / 2.0)) * 1000)
+            rt = int(max(0.0, min(1.0, (axis(5) + 1.0) / 2.0)) * 1000)
+        else:
+            # No trigger axes reported: report both triggers released.
+            lt = rt = 0
 
         with self.state.lock:
             dz = self.state.deadzone_pct
@@ -815,6 +827,9 @@ class GamepadManager:
                 "btn_r3": button(11),
             }
         else:
+            # SDL GameController order: A B X Y LB RB BACK START L3 R3.
+            # Some Linux drivers report DPAD_UP/DOWN/LEFT/RIGHT as buttons 11-14,
+            # so only treat the hat as authoritative when the pad has a hat.
             btn_states = {
                 "btn_a": button(0),
                 "btn_b": button(1),
@@ -835,6 +850,11 @@ class GamepadManager:
             dp_down = hat_y < 0
             dp_left = hat_x < 0
             dp_right = hat_x > 0
+        # Drivers that report no hat expose the d-pad as buttons 11-14.
+        dp_up = dp_up or button(11)
+        dp_down = dp_down or button(12)
+        dp_left = dp_left or button(13)
+        dp_right = dp_right or button(14)
         btn_states.update({
             "dpad_up": dp_up,
             "dpad_down": dp_down,
